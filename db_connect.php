@@ -1,8 +1,10 @@
 <?php
+// db_connect.php
+// FIXED: Using LOCALHOST credentials and unified database name.
 $host = "localhost";
 $user = "root";
 $password = "";
-$database = "saplotdb";
+$database = "u763865560_EmmanuelCafeDB";
  
 $conn = new mysqli($host, $user, $password, $database);
  
