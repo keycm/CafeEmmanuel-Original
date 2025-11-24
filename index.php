@@ -1,6 +1,6 @@
 <?php
 session_start();
-include 'config.php'; 
+include 'config.php'; // Handles connection to the main database as $conn
 require_once __DIR__ . '/audit.php';
 require_once __DIR__ . '/mailer.php'; 
 
@@ -23,6 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_otp'])) {
         $otp_error = 'Session expired. Please login again.';
         unset($_SESSION['otp_user_id'], $_SESSION['otp_email'], $_SESSION['show_otp_modal']);
     } else {
+        // Fetch latest unused OTP for this user
         $stmt = $conn->prepare("SELECT id, code, expires_at, attempts FROM otp_codes WHERE user_id = ? AND used_at IS NULL ORDER BY id DESC LIMIT 1");
         $stmt->bind_param('i', $userId);
         $stmt->execute();
@@ -37,6 +38,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_otp'])) {
         } elseif ((int)$otpRecord['attempts'] >= 5) {
             $otp_error = 'Too many attempts. Please request a new code.';
         } elseif ($code_input !== $otpRecord['code']) {
+            // Increment attempts
             $updateStmt = $conn->prepare("UPDATE otp_codes SET attempts = attempts + 1 WHERE id = ?");
             $updateStmt->bind_param('i', $otpRecord['id']);
             $updateStmt->execute();
@@ -50,6 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_otp'])) {
             $markStmt->close();
             
             // --- MARK USER AS VERIFIED (Safety Check) ---
+            // Ensure user is verified upon successful OTP
             $verifyStmt = $conn->prepare("UPDATE users SET is_verified = 1 WHERE id = ?");
             if ($verifyStmt) {
                 $verifyStmt->bind_param('i', $userId);
@@ -63,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_otp'])) {
             $_SESSION['fullname'] = $_SESSION['otp_fullname'] ?? '';
             $_SESSION['role'] = $_SESSION['otp_role'] ?? 'user';
             
-            // Cleanup
+            // Cleanup OTP session vars
             unset($_SESSION['otp_user_id'], $_SESSION['otp_email'], $_SESSION['otp_fullname'], $_SESSION['otp_role'], $_SESSION['show_otp_modal']);
             
             audit($userId, 'login_success_otp_verified', 'users', $userId, []);
@@ -79,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_otp'])) {
 }
 
 // ---------------------------------------------------------
-// 2. LOGIN LOGIC (Updated: Email OR Username)
+// 2. LOGIN LOGIC (Email OR Username)
 // ---------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
     // Accept 'identifier' (new input name) or fallback to 'email' (old)
@@ -107,7 +110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                 if ($isVerified) {
                     // Verified: Direct Login
                     $_SESSION['user_id'] = $user['id'];
-                    $_SESSION['email'] = $user['email']; // Use actual email from DB
+                    $_SESSION['email'] = $user['email'];
                     $_SESSION['fullname'] = $user['fullname'];
                     $_SESSION['role'] = $user['role'];
                     
@@ -176,10 +179,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
         } else {
             $hashed_password = password_hash($password, PASSWORD_DEFAULT);
             
-            // Try to insert with is_verified column
+            // Try to insert with is_verified column (default 0)
+            // Fallback to standard insert if column missing
             $insert_stmt = $conn->prepare("INSERT INTO users (username, password, fullname, email, contact, gender, is_verified) VALUES (?, ?, ?, ?, ?, ?, 0)");
-            
-            // Fallback if column missing (prevents fatal error)
             if (!$insert_stmt) {
                  $insert_stmt = $conn->prepare("INSERT INTO users (username, password, fullname, email, contact, gender) VALUES (?, ?, ?, ?, ?, ?)");
                  $insert_stmt->bind_param("ssssss", $username, $hashed_password, $fullname, $email, $contact, $gender);
@@ -222,17 +224,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
     }
 }
 
-// --- Fetch Menu Items from Database (FIXED: Uses main $conn) ---
-// Removed "root" connection that causes crashes on live server
+// ---------------------------------------------------------
+// 4. FETCH MENU ITEMS (FIXED: Uses existing $conn)
+// ---------------------------------------------------------
 $coffee_items = $food_items = $dessert_items = [];
 
+// Use the $conn that was established in config.php
 if (isset($conn) && !$conn->connect_error) {
+    // Fetch Coffee & Drinks (Category: coffee)
     $coffee_result = $conn->query("SELECT * FROM products WHERE category = 'coffee' AND stock > 0 ORDER BY id DESC LIMIT 4");
     $coffee_items = $coffee_result ? $coffee_result->fetch_all(MYSQLI_ASSOC) : [];
 
+    // Fetch Food (Categories: pizza, burger, pasta)
     $food_result = $conn->query("SELECT * FROM products WHERE category IN ('pizza', 'burger', 'pasta') AND stock > 0 ORDER BY id DESC LIMIT 4");
     $food_items = $food_result ? $food_result->fetch_all(MYSQLI_ASSOC) : [];
 
+    // Fetch Desserts (Category: dessert)
     $dessert_result = $conn->query("SELECT * FROM products WHERE category = 'dessert' AND stock > 0 ORDER BY id DESC LIMIT 4");
     $dessert_items = $dessert_result ? $dessert_result->fetch_all(MYSQLI_ASSOC) : [];
 }
@@ -242,22 +249,28 @@ if (isset($conn) && !$conn->connect_error) {
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cafe Emmanuel</title>
+    <title>Cafe Emmanuel - Roasting with Art</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Akaya+Telivigala&family=Archivo+Black&family=Archivo+Narrow:wght@400;700&family=Birthstone+Bounce:wght@500&family=Inknut+Antiqua:wght@600&family=Playfair+Display:wght@700&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Akaya+Telivigala&family=Archivo+Black&family=Archivo+Narrow:wght@400;700&family=Birthstone+Bounce:wght@500&family=Inknut+Antiqua:wght@600&family=Playfair+Display:wght@400;600;700&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
     <style>
-        /* --- Global Styles & Variables --- */
+        /* --- Global Variables --- */
         :root {
             /* Colors */
             --primary-color: #B95A4B;
+            --primary-dark: #9C4538;
             --secondary-color: #3C2A21;
+            --accent-color: #E03A3E;
+            
             --text-color: #333;
+            --text-light: #666;
             --heading-color: #1F1F1F;
-            --light-gray: #F6F6F6;
+            --bg-body: #FFFFFF;
+            --bg-light: #FCFBF8;
+            --bg-gray: #F9F9F9;
             --white: #FFFFFF;
-            --border-color: #EAEAEA;
+
             --footer-bg-color: #1a120b;
             --footer-text-color: #ccc;
             --footer-link-hover: #FFC94A;
@@ -266,444 +279,251 @@ if (isset($conn) && !$conn->connect_error) {
             --font-logo-cafe: 'Archivo Black', sans-serif;
             --font-logo-emmanuel: 'Birthstone Bounce', cursive;
             --font-nav: 'Inknut Antiqua', serif;
-            --font-hero-heading: 'Akaya Telivigala', cursive;
-            --font-hero-body: 'Archivo Narrow', sans-serif;
-
-            /* Fallback Fonts */
-            --font-section-heading: 'Playfair Display', serif;
-            --font-body-default: 'Lato', sans-serif;
+            --font-hero: 'Akaya Telivigala', cursive;
+            --font-heading: 'Playfair Display', serif;
+            --font-body: 'Lato', sans-serif;
             
             --nav-height: 90px;
         }
 
-        /* --- Base & Reset --- */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        html {
-            scroll-behavior: smooth;
-            scroll-padding-top: var(--nav-height);
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; scroll-padding-top: var(--nav-height); }
+        
         body {
-            font-family: var(--font-body-default);
+            font-family: var(--font-body);
             color: var(--text-color);
-            background-color: var(--white);
+            background-color: var(--bg-body);
             line-height: 1.7;
-        }
-        .container {
-            max-width: 1140px;
-            margin: 0 auto;
-            padding: 0 20px;
-        }
-        .section-title {
-            font-family: var(--font-section-heading);
-            text-align: center;
-            font-size: 2.8rem;
-            color: var(--heading-color);
-            margin-bottom: 1rem;
-        }
-        .section-subtitle {
-            text-align: center;
-            max-width: 650px;
-            margin: 0 auto 3.5rem auto;
-            color: #666;
-            font-size: 1.1rem;
-        }
-        section {
-            padding: 6rem 0;
+            overflow-x: hidden;
         }
 
-        /* --- Header & Navigation --- */
-        .header {
-            position: fixed;
-            width: 100%;
-            top: 0;
-            z-index: 1000;
-            height: var(--nav-height);
-            background: transparent;
-            transition: background-color 0.4s ease, backdrop-filter 0.4s ease;
-        }
-        .header.scrolled {
-            background: rgba(26, 18, 11, 0.85);
-            backdrop-filter: blur(10px);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        .navbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            height: 100%;
-        }
-        .nav-logo {
-            text-decoration: none;
-            color: var(--white);
-            display: flex;
-            align-items: center;
-        }
-        .logo-cafe {
-            font-family: var(--font-logo-cafe);
-            font-size: 40px;
-        }
-        .logo-emmanuel {
-            font-family: var(--font-logo-emmanuel);
-            font-size: 40px;
-            font-weight: 500;
-            margin-left: 10px;
-        }
-        .first-letter {
-            color: #b41329ff; /* Maroon Red */
-        }
-        .nav-menu {
-            display: flex;
-            list-style: none;
-            gap: 3rem;
-        }
-        .nav-link {
-            font-family: var(--font-nav);
-            font-size: 16px;
-            font-weight: 600;
-            color: #E0E0E0;
-            text-decoration: none;
-            transition: color 0.3s ease;
-        }
-        .nav-link:hover, .nav-link.active {
-            color: var(--footer-link-hover);
-        }
-        .nav-button {
-            background-color: var(--footer-link-hover);
-            color: var(--secondary-color);
-            padding: 10px 22px;
-            border-radius: 8px;
-            text-decoration: none;
-            font-weight: bold;
-            transition: background-color 0.3s ease;
-        }
-        .nav-button:hover {
-            background-color: #e6b33a;
-        }
-        .hamburger { display: none; }
-        .bar { display: block; width: 25px; height: 3px; margin: 5px auto; transition: all 0.3s ease-in-out; background-color: var(--white); }
-        .nav-right-cluster {
-            display: flex;
-            align-items: center;
-            gap: 1.5rem;
-        }
-        .nav-cart-link {
-            color: var(--white);
-            font-size: 1.2rem;
-            text-decoration: none;
-            transition: color 0.3s ease;
-        }
-        .nav-cart-link:hover {
-            color: var(--footer-link-hover);
-        }
-
-        /* --- Profile Dropdown --- */
-        .profile-dropdown {
-            position: relative;
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+        h1, h2, h3, h4 { color: var(--heading-color); margin-bottom: 1rem; }
+        a { text-decoration: none; color: inherit; transition: all 0.3s ease; }
+        ul { list-style: none; }
+        
+        /* Buttons */
+        .btn {
             display: inline-block;
-            cursor: pointer;
-        }
-        .profile-info {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: var(--white);
-        }
-        .profile-info span {
-            font-weight: 500;
-            font-size: 16px;
-            font-family: var(--font-nav);
-            color: #E0E0E0;
-            transition: color 0.3s ease;
-        }
-        .profile-info i {
-            font-size: 1.1rem;
-            color: #E0E0E0;
-            transition: color 0.3s ease;
-        }
-        .profile-dropdown:hover .profile-info span,
-        .profile-dropdown:hover .profile-info i {
-            color: var(--footer-link-hover);
-        }
-        .dropdown-content {
-            display: none;
-            position: absolute;
-            right: 0;
-            top: 150%;
-            background-color: var(--white);
-            min-width: 180px;
-            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
-            z-index: 1001;
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid var(--border-color);
-        }
-        .dropdown-content a {
-            color: var(--text-color);
-            padding: 12px 16px;
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 14px;
-            font-weight: 500;
-            text-align: left;
-            transition: background-color 0.2s, color 0.2s;
-        }
-        .dropdown-content a:hover {
-            background-color: #f1f1f1;
-            color: var(--primary-color);
-        }
-        .profile-dropdown.active .dropdown-content {
-            display: block;
-        }
-
-        /* --- Hero Section --- */
-        .hero-section {
-            height: 100vh;
-            background: linear-gradient(rgba(0,0,0,0.5), rgba(0,0,0,0.5)), url('Cover-Photo.jpg') no-repeat center center/cover;
-            display: flex;
-            justify-content: flex-start;
-            align-items: center;
-            color: var(--white);
-            padding: 0 5%;
-        }
-        .hero-content {
-            max-width: 800px;
-            text-align: left;
-        }
-        .hero-content h1 {
-            font-family: var(--font-hero-heading);
-            font-size: 60px;
-            font-weight: 400;
-            color: var(--white);
-            line-height: 1.4;
-            margin-bottom: 1.5rem;
-            letter-spacing: 1px;
-        }
-        .hero-content .highlight-text {
-            color: #E84545;
-        }
-        .hero-content p {
-            font-family: var(--font-hero-body);
-            font-size: 20px;
-            line-height: 1.7;
-            max-width: 650px;
-            margin: 0 0 2.5rem 0;
-        }
-        .hero-buttons .btn {
-            text-decoration: none;
-            padding: 14px 32px;
-            border-radius: 8px;
-            font-family: var(--font-hero-body);
+            padding: 12px 30px;
+            border-radius: 50px;
+            font-family: var(--font-body);
             font-weight: 700;
-            font-size: 16px;
-            margin-right: 10px;
+            font-size: 1rem;
+            text-align: center;
+            cursor: pointer;
             transition: all 0.3s ease;
             border: 2px solid transparent;
         }
-        .btn.btn-primary {
-            background-color: var(--primary-color);
-            color: var(--white);
-        }
-        .btn.btn-primary:hover { background-color: #a14436; }
-        .btn.btn-secondary {
-            background-color: transparent;
-            color: var(--white);
-            border-color: var(--white);
-        }
-        .btn.btn-secondary:hover {
-            background-color: var(--white);
-            color: var(--secondary-color);
-        }
+        .btn-primary { background-color: var(--primary-color); color: var(--white); box-shadow: 0 4px 15px rgba(185, 90, 75, 0.3); }
+        .btn-primary:hover { background-color: var(--primary-dark); transform: translateY(-2px); }
+        .btn-outline { background-color: transparent; color: var(--white); border-color: var(--white); }
+        .btn-outline:hover { background-color: var(--white); color: var(--secondary-color); }
+        .btn-dark { background-color: var(--heading-color); color: var(--white); }
+        .btn-dark:hover { background-color: #000; }
 
-        /* --- Menu Section (Homepage) --- */
-        #menu {
-            background-color: var(--white);
+        /* --- Header & Navigation --- */
+        .header {
+            position: fixed; width: 100%; top: 0; z-index: 1000; height: var(--nav-height);
+            background: transparent; transition: background 0.4s ease, box-shadow 0.4s ease;
         }
-        .menu-tabs {
-            display: flex;
-            justify-content: center;
-            gap: 1rem;
-            margin-bottom: 3.5rem;
+        .header.scrolled { background: rgba(26, 18, 11, 0.98); box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+        .navbar { display: flex; justify-content: space-between; align-items: center; height: 100%; }
+        .nav-logo { display: flex; align-items: center; color: var(--white); }
+        .logo-cafe { font-family: var(--font-logo-cafe); font-size: 32px; letter-spacing: -1px; }
+        .logo-emmanuel { font-family: var(--font-logo-emmanuel); font-size: 38px; margin-left: 8px; color: var(--primary-color); font-weight: 500; }
+        .nav-menu { display: flex; gap: 2.5rem; }
+        .nav-link {
+            font-family: var(--font-nav); font-size: 15px; font-weight: 500; color: rgba(255,255,255,0.9); position: relative; letter-spacing: 0.5px;
         }
-        .tab-link {
-            font-family: var(--font-body-default);
-            background-color: #f0f0f0;
-            color: #555;
-            border: none;
-            padding: 12px 30px;
-            border-radius: 50px;
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 1rem;
-            transition: all 0.3s ease;
+        .nav-link::after {
+            content: ''; position: absolute; width: 0; height: 2px; bottom: -4px; left: 0; background-color: var(--footer-link-hover); transition: width 0.3s;
         }
-        .tab-link:hover {
-            background-color: #ddd;
+        .nav-link:hover::after, .nav-link.active::after { width: 100%; }
+        .nav-link:hover, .nav-link.active { color: var(--footer-link-hover); }
+        .nav-right-cluster { display: flex; align-items: center; gap: 1.5rem; }
+        .nav-icon-link { color: var(--white); font-size: 1.2rem; transition: color 0.3s; }
+        .nav-icon-link:hover { color: var(--footer-link-hover); }
+        .login-trigger {
+            background: var(--primary-color); color: var(--white); padding: 8px 24px; border-radius: 30px; font-weight: 600; font-size: 0.9rem; border: none; cursor: pointer; transition: background 0.3s;
         }
-        .tab-link.active {
-            background-color: var(--primary-color);
-            color: var(--white);
-            box-shadow: 0 4px 10px rgba(185, 90, 75, 0.3);
+        .login-trigger:hover { background: var(--primary-dark); }
+        
+        .profile-dropdown { position: relative; cursor: pointer; }
+        .profile-header { display: flex; align-items: center; gap: 8px; color: var(--white); font-weight: 500; }
+        .profile-menu {
+            display: none; position: absolute; right: 0; top: 140%; background: var(--white); min-width: 200px; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); overflow: hidden; z-index: 1001;
         }
-        .menu-content {
-            display: none; 
-            grid-template-columns: repeat(2, 1fr);
-            gap: 2.5rem;
-            animation: fadeIn 0.5s ease-in-out;
+        .profile-dropdown:hover .profile-menu { display: block; }
+        .profile-menu a { display: block; padding: 12px 20px; color: var(--text-color); font-size: 0.95rem; border-bottom: 1px solid var(--border-color); }
+        .profile-menu a:hover { background: var(--bg-light); color: var(--primary-color); }
+        
+        .hamburger { display: none; cursor: pointer; z-index: 1002; }
+        .bar { display: block; width: 25px; height: 3px; margin: 5px auto; background-color: var(--white); transition: 0.3s; }
+
+        /* --- Hero Section --- */
+        .hero-section {
+            position: relative; height: 100vh; width: 100%; overflow: hidden; display: flex; align-items: center; justify-content: flex-start; margin-top: 0;
         }
-        .menu-content.active {
-            display: grid;
+        .hero-slider, .hero-overlay, .hero-slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        .hero-slide { background-size: cover; background-position: center; opacity: 0; transition: opacity 1.5s ease-in-out; transform: scale(1.05); }
+        .hero-slide.active { opacity: 1; transform: scale(1); transition: opacity 1.5s ease-in-out, transform 6s ease-out; }
+        .hero-overlay { background: linear-gradient(to right, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 40%, rgba(0,0,0,0) 100%); z-index: 1; }
+        .hero-content {
+            position: relative; z-index: 2; color: #FFFFFF; max-width: 700px; padding-left: 5%; padding-right: 20px; margin: 0; text-align: left; opacity: 0; animation: fadeInUp 1.2s ease-out forwards 0.5s;
         }
-        .menu-item {
-            display: flex;
-            align-items: center;
-            gap: 1.5rem;
+        .hero-content h1 {
+            font-family: var(--font-hero); font-size: 5rem; line-height: 1.1; margin-bottom: 1.5rem; color: #FFFFFF; text-shadow: 2px 2px 20px rgba(0,0,0,0.9);
         }
-        .menu-item img {
-            width: 80px;
-            height: 80px;
-            object-fit: cover;
-            border-radius: 12px;
+        .hero-content h1 span { color: var(--primary-color); }
+        .hero-content p {
+            font-size: 1.3rem; font-weight: 400; margin-bottom: 2.5rem; color: #FFFFFF; text-shadow: 1px 1px 10px rgba(0,0,0,0.9); max-width: 600px; line-height: 1.6;
         }
-        .item-details {
-            flex-grow: 1;
+        .hero-actions { display: flex; gap: 1rem; justify-content: flex-start; }
+
+        /* --- Menu Section --- */
+        .section-padding { padding: 6rem 0; }
+        .section-title { font-family: var(--font-heading); font-size: 3rem; text-align: center; margin-bottom: 1rem; color: var(--heading-color); }
+        .section-subtitle { text-align: center; color: var(--text-light); max-width: 600px; margin: 0 auto 3.5rem; font-size: 1.1rem; }
+        .menu-tabs { display: flex; justify-content: center; gap: 1rem; margin-bottom: 3rem; }
+        .tab-btn { background: transparent; border: 2px solid var(--border-color); padding: 10px 25px; border-radius: 30px; font-family: var(--font-body); font-weight: 600; color: var(--text-light); cursor: pointer; transition: all 0.3s; }
+        .tab-btn:hover, .tab-btn.active { background: var(--primary-color); border-color: var(--primary-color); color: var(--white); }
+        .menu-grid { display: none; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 2rem; animation: fadeIn 0.5s ease; }
+        .menu-grid.active { display: grid; }
+        .menu-item-card { background: var(--white); border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.05); transition: transform 0.3s ease; border: 1px solid var(--border-color); display: flex; flex-direction: column; }
+        .menu-item-card:hover { transform: translateY(-8px); box-shadow: 0 15px 40px rgba(0,0,0,0.1); }
+        .card-img { height: 220px; overflow: hidden; background: #f4f4f4; }
+        .card-img img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s ease; }
+        .menu-item-card:hover .card-img img { transform: scale(1.1); }
+        .card-body { padding: 1.5rem; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; }
+        .card-title { font-family: var(--font-heading); font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem; }
+        .card-desc { font-size: 0.9rem; color: var(--text-light); margin-bottom: 1rem; line-height: 1.5; }
+        .card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: auto; }
+        .card-price { font-weight: 700; color: var(--primary-color); font-size: 1.2rem; }
+        
+        /* --- About Section --- */
+        .about-section { background-color: var(--bg-light); }
+        .about-content { display: grid; grid-template-columns: 1.2fr 1fr; gap: 4rem; align-items: center; }
+        .about-text h3 { font-family: var(--font-heading); font-size: 2.2rem; margin-bottom: 1.5rem; }
+        .about-text p { margin-bottom: 1.5rem; color: #555; font-size: 1.05rem; }
+        .features-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem; margin-bottom: 4rem; }
+        .feature-box { background: var(--white); padding: 2.5rem; border-radius: 12px; text-align: center; box-shadow: 0 5px 15px rgba(0,0,0,0.03); transition: transform 0.3s; }
+        .feature-box:hover { transform: translateY(-5px); }
+        .feature-box i { font-size: 2.5rem; color: var(--primary-color); margin-bottom: 1.5rem; }
+        .feature-box h4 { font-family: var(--font-heading); font-size: 1.25rem; }
+        .stats-row { display: flex; gap: 2rem; margin-top: 2rem; }
+        .stat-item { text-align: center; flex: 1; background: rgba(185, 90, 75, 0.05); padding: 1rem; border-radius: 10px; }
+        .stat-num { font-size: 2rem; font-weight: 700; color: var(--primary-color); display: block; }
+        .stat-label { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; color: #777; }
+
+        /* --- Contact Section --- */
+        .contact-section { background: var(--white); padding-bottom: 0; }
+        .contact-wrapper { display: grid; grid-template-columns: 1fr 1.5fr; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.08); margin-bottom: 5rem; }
+        .contact-details { background: var(--secondary-color); color: var(--white); padding: 3rem; display: flex; flex-direction: column; justify-content: center; }
+        .contact-details h3 { color: var(--white); font-family: var(--font-heading); font-size: 2rem; margin-bottom: 2rem; }
+        .contact-item { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
+        .contact-item i { color: var(--footer-link-hover); font-size: 1.2rem; margin-top: 5px; }
+        .hours-box { background: rgba(255,255,255,0.1); padding: 1.5rem; border-radius: 10px; margin-top: 1rem; }
+        .hours-row { display: flex; justify-content: space-between; margin-bottom: 0.5rem; font-size: 0.9rem; }
+        .map-container { min-height: 400px; }
+        .map-container iframe { width: 100%; height: 100%; border: 0; }
+
+        /* --- Newsletter --- */
+        .newsletter-section { background: var(--bg-gray); text-align: center; }
+        .newsletter-card { background: var(--white); max-width: 800px; margin: 0 auto; padding: 3rem; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.05); }
+        .newsletter-form { display: flex; gap: 10px; max-width: 500px; margin: 2rem auto 0; }
+        .newsletter-input { flex: 1; padding: 12px 20px; border: 1px solid var(--border-color); border-radius: 50px; font-family: var(--font-body); outline: none; }
+        .newsletter-input:focus { border-color: var(--primary-color); }
+
+        /* --- Footer --- */
+        .footer { background-color: var(--footer-bg-color); color: var(--footer-text-color); padding-top: 4rem; font-size: 0.95rem; }
+        .footer-content { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 3rem; padding-bottom: 3rem; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .footer-brand h3 { color: var(--white); font-family: var(--font-logo-cafe); font-size: 1.8rem; }
+        .footer-brand p { opacity: 0.7; margin-bottom: 1.5rem; line-height: 1.7; }
+        .socials { display: flex; gap: 15px; }
+        .social-link { width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; transition: 0.3s; }
+        .social-link:hover { background: var(--footer-link-hover); color: var(--secondary-color); }
+        .footer-col h4 { color: var(--white); font-size: 1.1rem; margin-bottom: 1.5rem; font-family: var(--font-body); }
+        .footer-links li { margin-bottom: 0.8rem; }
+        .footer-links a { color: rgba(255,255,255,0.6); transition: 0.3s; }
+        .footer-links a:hover { color: var(--footer-link-hover); padding-left: 5px; }
+        .copyright { text-align: center; padding: 1.5rem 0; opacity: 0.5; font-size: 0.85rem; }
+
+        /* --- Modal Styles --- */
+        .modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); z-index: 2000; align-items: center; justify-content: center;
+            backdrop-filter: blur(8px); animation: fadeIn 0.3s;
         }
-        .item-details h3 {
-            font-family: var(--font-section-heading);
-            font-size: 1.2rem;
-            color: var(--heading-color);
-            margin-bottom: 0.25rem;
-            display: flex;
-            align-items: center;
+        .modal-box {
+            background: #ffffff;
+            padding: 40px;
+            border-radius: 24px;
+            width: 90%;
+            max-width: 420px;
+            position: relative;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
         }
-        .item-details p {
-            color: #666;
-            font-size: 0.9rem;
+        .modal-close {
+            position: absolute; top: 20px; right: 25px; font-size: 1.5rem; color: #ccc; cursor: pointer; transition: 0.2s;
         }
-        .item-price {
-            font-family: var(--font-section-heading);
-            font-size: 1.2rem;
-            font-weight: bold;
-            color: var(--secondary-color);
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+        .modal-close:hover { color: var(--primary-color); }
+        
+        .modal-title {
+            text-align: center; font-family: var(--font-heading); font-size: 2rem;
+            margin-bottom: 2rem; color: var(--heading-color); letter-spacing: -0.5px;
         }
         
-        /* --- About, Contact, Footer, Modals, etc. --- */
-        #about { background-color: #FCFBF8; }
-        .features-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem; margin-bottom: 5rem; }
-        .feature-card { background: var(--white); padding: 2.5rem; text-align: center; border-radius: 12px; border: 1px solid var(--border-color); }
-        .feature-card i { font-size: 2.8rem; color: var(--primary-color); margin-bottom: 1.5rem; }
-        .feature-card h3 { font-family: var(--font-section-heading); margin-bottom: 0.75rem; font-size: 1.4rem; }
-        .story-section { display: grid; grid-template-columns: 1.2fr 1fr; gap: 4rem; align-items: center; }
-        .story-content h3 { font-family: var(--font-section-heading); font-size: 2.2rem; margin-bottom: 1.5rem; }
-        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem; }
-        .stat-box { background: var(--light-gray); padding: 2rem; text-align: center; border-radius: 12px; border: 1px solid var(--border-color); }
-        .stat-box strong { display: block; font-size: 2.5rem; color: var(--primary-color); font-family: var(--font-section-heading); }
-        #contact { padding-bottom: 0; }
-        .contact-wrapper { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; }
-        .info-item { display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 2rem; }
-        .info-item i { font-size: 1.2rem; color: var(--primary-color); margin-top: 8px; width: 25px; text-align: center; }
-        .info-item strong { display: block; font-size: 0.9rem; color: #999; letter-spacing: 1px; margin-bottom: 0.25rem; }
-        .hours-box { background: var(--white); padding: 2rem; border-radius: 12px; margin-top: 2rem; border: 1px solid var(--border-color); }
-        .hours-box h4 { font-family: var(--font-section-heading); margin-bottom: 1rem; font-size: 1.3rem; }
-        .hours-box h4 i { margin-right: 0.75rem; }
-        .hours-box ul { list-style: none; }
-        .hours-box li { display: flex; justify-content: space-between; padding: 0.75rem 0; border-bottom: 1px solid var(--border-color); }
-        .hours-box li:last-child { border-bottom: none; }
-        .contact-buttons { margin-top: 2rem; display: flex; gap: 1rem; }
-        .contact-buttons .btn { text-decoration: none; padding: 14px 22px; border-radius: 8px; text-align: center; flex: 1; font-weight: bold; transition: all 0.3s ease; border: 2px solid; }
-        .btn.btn-dark { background-color: var(--heading-color); color: var(--white); border-color: var(--heading-color); }
-        .btn.btn-dark:hover { background-color: #000; }
-        .btn.btn-outline { background-color: transparent; color: var(--heading-color); border-color: var(--heading-color); }
-        .btn.btn-outline:hover { background-color: var(--heading-color); color: var(--white); }
-        .contact-map { background: var(--light-gray); border-radius: 12px; overflow: hidden; }
-        .contact-map iframe { width: 100%; height: 100%; min-height: 500px; border: 0; }
-        .newsletter-section { background-color: var(--white); padding: 4rem 0; }
-        .newsletter-content { background: #fff; border: 1px solid var(--border-color); border-radius: 12px; padding: 3rem; text-align: center; max-width: 700px; margin: 0 auto; box-shadow: 0 5px 20px rgba(0,0,0,0.05); }
-        .newsletter-content h3 { font-family: var(--font-section-heading); font-size: 2rem; color: var(--heading-color); margin-bottom: 0.75rem; }
-        .newsletter-content p { font-size: 1rem; color: #666; margin-bottom: 2rem; }
-        .newsletter-form { display: flex; justify-content: center; gap: 1rem; }
-        .newsletter-form input[type="email"] { flex-grow: 1; max-width: 400px; padding: 14px 20px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 1rem; color: var(--text-color); }
-        .newsletter-form input[type="email"]::placeholder { color: #aaa; }
-        .newsletter-form button { background-color: var(--primary-color); color: var(--white); padding: 14px 25px; border: none; border-radius: 8px; font-size: 1rem; font-weight: bold; cursor: pointer; transition: background-color 0.3s ease; }
-        .newsletter-form button:hover { background-color: #a14436; }
-        .new-footer { background-color: var(--footer-bg-color); color: var(--footer-text-color); padding: 4rem 0 1rem; font-size: 0.95rem; }
-        .footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 2rem; margin-bottom: 3rem; padding-bottom: 2rem; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
-        .footer-about .footer-logo { font-family: var(--font-section-heading); font-size: 1.8rem; color: var(--white); margin-bottom: 1rem; }
-        .footer-about p { color: #a0a0a0; line-height: 1.6; margin-bottom: 1.5rem; }
-        .social-links { display: flex; gap: 15px; margin-top: 1rem; }
-        .social-links a { color: var(--footer-text-color); font-size: 1.3rem; transition: color 0.3s ease; }
-        .social-links a:hover { color: var(--footer-link-hover); }
-        .footer-links h4, .footer-contact h4 { font-family: var(--font-body-default); font-size: 1.1rem; font-weight: bold; color: var(--white); margin-bottom: 1.2rem; }
-        .footer-links ul { list-style: none; }
-        .footer-links ul li { margin-bottom: 0.8rem; }
-        .footer-links a { color: var(--footer-text-color); text-decoration: none; transition: color 0.3s ease; }
-        .footer-links a:hover { color: var(--footer-link-hover); }
-        .footer-contact p { margin-bottom: 0.8rem; color: var(--footer-text-color); }
-        .footer-bottom { text-align: center; padding-top: 1rem; font-size: 0.85rem; color: #888; }
-        .modal { display: none; position: fixed; z-index: 1001; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.6); padding-top: 60px; }
-        .modal-content { background-color: #fefefe; margin: 5% auto; padding: 30px; border: 1px solid #888; width: 90%; max-width: 380px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); text-align: center; position: relative; animation: fadeIn 0.5s; }
-        .close-btn { color: #aaa; position: absolute; top: 10px; right: 20px; font-size: 28px; font-weight: bold; }
-        .close-btn:hover, .close-btn:focus { color: black; text-decoration: none; cursor: pointer; }
-        
-        /* --- FIX FOR INPUT FIELDS --- */
-        /* This specifically targets all text-based inputs to ensure consistent full width and padding */
-        .modal-content input[type="email"], 
-        .modal-content input[type="password"], 
-        .modal-content input[type="text"],
-        .modal-content input[type="tel"] { 
-            width: 100%; 
-            padding: 10px; 
-            margin: 8px 0; 
-            display: inline-block; 
-            border: 1px solid #ccc; 
-            border-radius: 6px; 
-            box-sizing: border-box; 
+        /* Input Groups */
+        .input-group { position: relative; margin-bottom: 20px; }
+        .input-icon {
+            position: absolute; left: 18px; top: 50%; transform: translateY(-50%);
+            color: #aaa; font-size: 1rem; transition: 0.3s;
         }
+        .input-field {
+            width: 100%; padding: 14px 15px 14px 48px;
+            border: 1px solid #e2e8f0; border-radius: 12px;
+            font-family: var(--font-body); font-size: 1rem;
+            background: #f8f9fa; transition: 0.3s; color: var(--text-color);
+        }
+        .input-field:focus {
+            border-color: var(--primary-color); background: #fff;
+            box-shadow: 0 0 0 4px rgba(185, 90, 75, 0.1); outline: none;
+        }
+        .input-field:focus + .input-icon { color: var(--primary-color); }
+        
+        .modal-btn { width: 100%; padding: 14px; border-radius: 12px; font-size: 1rem; margin-top: 10px; letter-spacing: 0.5px; }
+        .modal-options { display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; margin-bottom: 20px; color: #666; }
+        .modal-footer { text-align: center; margin-top: 25px; font-size: 0.95rem; color: #666; }
+        .link-highlight { color: var(--primary-color); font-weight: 700; cursor: pointer; transition: 0.2s; }
+        .link-highlight:hover { text-decoration: underline; color: var(--primary-dark); }
+        
+        select.input-field { appearance: none; cursor: pointer; }
 
-        .modal-content button { background-color: #111; color: white; padding: 12px 20px; margin: 15px 0; border: none; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; transition: background-color 0.3s; }
-        .modal-content .options { display: flex; justify-content: space-between; align-items: center; font-size: 14px; margin-top: 10px; margin-bottom: 15px; }
-        .modal-content .register a { color: #E03A3E; font-weight: bold; }
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(30px); scale: 0.95; } to { opacity: 1; transform: translateY(0); scale: 1; } }
+
+        /* Responsive */
         @media (max-width: 992px) {
-            .features-grid, .story-section, .contact-wrapper, .footer-grid { grid-template-columns: 1fr; }
-            .story-section, .footer-grid { text-align: center; }
-            .story-section { gap: 2rem; }
-            .stats-grid { grid-template-columns: repeat(2, 1fr); margin-top: 2rem; }
-            .hero-content { text-align: center; } 
-            .hero-content p { margin: 0 auto 2.5rem auto; }
-            .hero-buttons .btn { margin: 5px; }
-            .footer-about .social-links { justify-content: center; }
+            .hero-content h1 { font-size: 3.5rem; }
+            .about-content { grid-template-columns: 1fr; text-align: center; }
+            .contact-wrapper, .footer-content { grid-template-columns: 1fr; }
+            .features-row { grid-template-columns: 1fr; }
         }
         @media (max-width: 768px) {
-            .nav-menu { position: fixed; left: -100%; top: var(--nav-height); flex-direction: column; background-color: var(--secondary-color); width: 100%; text-align: center; transition: 0.3s; }
-            .nav-menu.active { left: 0; }
-            .nav-item { margin: 1.5rem 0; }
-            .hamburger { display: block; cursor: pointer; }
-            .hamburger.active .bar:nth-child(2) { opacity: 0; }
-            .hamburger.active .bar:nth-child(1) { transform: translateY(8px) rotate(45deg); }
-            .hamburger.active .bar:nth-child(3) { transform: translateY(-8px) rotate(-45deg); }
-            .nav-right-cluster { display: none; }
+            .nav-menu, .nav-right-cluster { display: none; }
             .hamburger { display: block; }
-            .hero-content h1 { font-size: 2.8rem; }
-            .section-title { font-size: 2.2rem; }
-            .stats-grid, .menu-content, .menu-grid { grid-template-columns: 1fr; }
-            .menu-filters { display: flex; width: 100%; }
-            .filter-btn { flex: 1; padding: 10px 5px; }
-            .hero-section { padding: 0 20px; }
-            .newsletter-form { flex-direction: column; gap: 15px; }
-            .newsletter-form input, .newsletter-form button { width: 100%; max-width: none; }
+            .nav-menu.active { display: flex; flex-direction: column; position: absolute; top: var(--nav-height); left: 0; width: 100%; background: var(--secondary-color); padding: 2rem; text-align: center; }
+            .mobile-link { display: block; }
+            .hero-content { padding-left: 20px; margin-left: 0; }
         }
     </style>
 </head>
 <body>
+
     <header class="header">
         <nav class="navbar container">
             <a href="#home" class="nav-logo">
@@ -711,40 +531,48 @@ if (isset($conn) && !$conn->connect_error) {
                 <span class="logo-emmanuel"><span class="first-letter">E</span>mmanuel</span>
             </a>
             <ul class="nav-menu">
-                <li class="nav-item"><a href="index.php" class="nav-link active">Home</a></li>
-                <li class="nav-item"><a href="product.php" class="nav-link">Menu</a></li>
-                <li class="nav-item"><a href="about.php" class="nav-link">About</a></li>
-                <li class="nav-item"><a href="contact.php" class="nav-link">Contact</a></li>
+                <li><a href="index.php" class="nav-link active">Home</a></li>
+                <li><a href="product.php" class="nav-link">Menu</a></li>
+                <li><a href="about.php" class="nav-link">About</a></li>
+                <li><a href="contact.php" class="nav-link">Contact</a></li>
                 <?php if (isset($_SESSION['user_id'])): ?>
-                <li class="nav-item"><a href="my_orders.php" class="nav-link">My Orders</a></li>
+                <li><a href="my_orders.php" class="nav-link">My Orders</a></li>
+                <?php endif; ?>
+                
+                <li class="mobile-link" style="display:none;"><a href="cart.php" class="nav-link">Cart</a></li>
+                <?php if (!isset($_SESSION['user_id'])): ?>
+                <li class="mobile-link" style="display:none;"><a href="#" onclick="openModal('loginModal')" class="nav-link">Login</a></li>
+                <?php else: ?>
+                <li class="mobile-link" style="display:none;"><a href="logout.php" class="nav-link">Logout</a></li>
                 <?php endif; ?>
             </ul>
+            
             <div class="nav-right-cluster">
                 <?php if (isset($_SESSION['user_id']) && isset($_SESSION['fullname'])): ?>
                     <div class="profile-dropdown">
-                        <div class="profile-info">
-                            <i class="fa fa-user-circle"></i>
+                        <div class="profile-header">
+                            <i class="fas fa-user-circle"></i>
                             <span><?php echo htmlspecialchars(explode(' ', $_SESSION['fullname'])[0]); ?></span>
-                            <i class="fa fa-caret-down"></i>
+                            <i class="fas fa-chevron-down" style="font-size: 0.8rem;"></i>
                         </div>
-                        <div class="dropdown-content">
-                            <a href="profile.php"><i class="fa fa-user"></i> My Profile</a>
-                            <?php if ($_SESSION['role'] === 'admin'): ?>
-                                <a href="Dashboard.php"><i class="fa fa-tachometer-alt"></i> Dashboard</a>
+                        <div class="profile-menu">
+                            <a href="profile.php"><i class="fas fa-user"></i> My Profile</a>
+                            <?php if (in_array($_SESSION['role'], ['admin', 'super_admin'])): ?>
+                                <a href="Dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
                             <?php endif; ?>
-                            <a href="logout.php"><i class="fa fa-sign-out-alt"></i> Log Out</a>
+                            <a href="logout.php"><i class="fas fa-sign-out-alt"></i> Log Out</a>
                         </div>
                     </div>
                 <?php else: ?>
-                    <button id="loginModalBtn" class="nav-button">Sign In / Sign Up</button>
+                    <button id="loginTrigger" class="login-trigger" onclick="openModal('loginModal')">Login</button>
                 <?php endif; ?>
                 
-                <a href="cart.php" class="nav-cart-link"><i class="fas fa-shopping-cart"></i></a>
+                <a href="cart.php" class="nav-icon-link"><i class="fas fa-shopping-cart"></i></a>
                 <?php if (isset($_SESSION['user_id'])): ?>
                     <?php include 'notification_bell.php'; ?>
                 <?php endif; ?>
-
             </div>
+
             <div class="hamburger">
                 <span class="bar"></span>
                 <span class="bar"></span>
@@ -755,533 +583,436 @@ if (isset($conn) && !$conn->connect_error) {
 
     <main>
         <section id="home" class="hero-section">
+            <div class="hero-slider">
+                <div class="hero-slide active" style="background-image: url('Cover-Photo.jpg');"></div>
+                <div class="hero-slide" style="background-image: url('https://images.unsplash.com/photo-1509042239860-f550ce710b93?q=80&w=2574&auto=format&fit=crop');"></div>
+                <div class="hero-slide" style="background-image: url('https://images.unsplash.com/photo-1559339352-11d035aa65de?q=80&w=2574&auto=format&fit=crop');"></div>
+                <div class="hero-slide" style="background-image: url('https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?q=80&w=2678&auto=format&fit=crop');"></div>
+            </div>
+            
+            <div class="hero-overlay"></div>
+
             <div class="hero-content">
-                <h1>Welcome to <span class="highlight-text">Cafe</span>Emmanuel</h1>
+                <h1>Welcome to <span>Cafe</span>Emmanuel</h1>
                 <p>Where every cup tells a story and every meal brings people together. Experience the perfect blend of artisanal coffee, fresh food, and warm atmosphere.</p>
-                <div class="hero-buttons">
+                <div class="hero-actions">
                     <a href="product.php" class="btn btn-primary">View Menu</a>
+                    <a href="#about" class="btn btn-outline">Our Story</a>
                 </div>
             </div>
         </section>
 
-        <section id="menu" class="menu-section">
+        <section id="menu" class="section-padding menu-section">
             <div class="container">
-                <h2 class="section-title">Our Menu</h2>
-                <p class="section-subtitle">Discover our carefully curated selection of artisanal coffee, fresh food, and delicious treats.</p>
+                <header class="section-header">
+                    <h2 class="section-title">Our Specialties</h2>
+                    <p class="section-subtitle">Handpicked favorites from our kitchen to your table. Fresh ingredients, crafted with passion.</p>
+                </header>
                 
                 <div class="menu-tabs">
-                    <button class="tab-link active" data-tab="coffee">Coffee & Drinks</button>
-                    <button class="tab-link" data-tab="food">Food</button>
-                    <button class="tab-link" data-tab="desserts">Desserts</button>
+                    <button class="tab-btn active" onclick="switchTab('coffee', this)">Coffee & Drinks</button>
+                    <button class="tab-btn" onclick="switchTab('food', this)">Food</button>
+                    <button class="tab-btn" onclick="switchTab('desserts', this)">Desserts</button>
                 </div>
 
-                <div id="coffee" class="menu-content active">
+                <div id="coffee" class="menu-grid active">
                     <?php if (!empty($coffee_items)): ?>
                         <?php foreach ($coffee_items as $item): ?>
-                            <div class="menu-item">
-                                <img src="<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>">
-                                <div class="item-details">
-                                    <h3><?php echo htmlspecialchars($item['name']); ?></h3>
-                                    <p>A delightful coffee choice.</p>
+                            <div class="menu-item-card">
+                                <div class="card-img">
+                                    <img src="<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>">
                                 </div>
-                                <p class="item-price">₱<?php echo number_format($item['price'], 2); ?></p>
+                                <div class="card-body">
+                                    <div>
+                                        <h3 class="card-title"><?php echo htmlspecialchars($item['name']); ?></h3>
+                                        <p class="card-desc">A rich and aromatic blend brewed to perfection.</p>
+                                    </div>
+                                    <div class="card-footer">
+                                        <span class="card-price">₱<?php echo number_format($item['price'], 2); ?></span>
+                                        <a href="product.php" class="btn btn-primary" style="padding: 8px 15px; border-radius: 50%; font-size: 0.9rem;"><i class="fas fa-plus"></i></a>
+                                    </div>
+                                </div>
                             </div>
                         <?php endforeach; ?>
                     <?php else: ?>
-                        <p>No coffee or drinks available at the moment.</p>
+                        <p style="text-align:center; grid-column:1/-1;">No coffee items available.</p>
                     <?php endif; ?>
                 </div>
 
-                <div id="food" class="menu-content">
-                      <?php if (!empty($food_items)): ?>
+                <div id="food" class="menu-grid">
+                     <?php if (!empty($food_items)): ?>
                         <?php foreach ($food_items as $item): ?>
-                            <div class="menu-item">
-                                <img src="<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>">
-                                <div class="item-details">
-                                    <h3><?php echo htmlspecialchars($item['name']); ?></h3>
-                                    <p>A savory <?php echo htmlspecialchars($item['category']); ?> dish.</p>
+                            <div class="menu-item-card">
+                                <div class="card-img">
+                                    <img src="<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>">
                                 </div>
-                                <p class="item-price">₱<?php echo number_format($item['price'], 2); ?></p>
+                                <div class="card-body">
+                                    <div>
+                                        <h3 class="card-title"><?php echo htmlspecialchars($item['name']); ?></h3>
+                                        <p class="card-desc">Delicious <?php echo htmlspecialchars($item['category']); ?> made with fresh ingredients.</p>
+                                    </div>
+                                    <div class="card-footer">
+                                        <span class="card-price">₱<?php echo number_format($item['price'], 2); ?></span>
+                                        <a href="product.php" class="btn btn-primary" style="padding: 8px 15px; border-radius: 50%; font-size: 0.9rem;"><i class="fas fa-plus"></i></a>
+                                    </div>
+                                </div>
                             </div>
                         <?php endforeach; ?>
                     <?php else: ?>
-                        <p>No food items available at the moment.</p>
+                        <p style="text-align:center; grid-column:1/-1;">No food items available.</p>
                     <?php endif; ?>
                 </div>
 
-                <div id="desserts" class="menu-content">
-                      <?php if (!empty($dessert_items)): ?>
+                <div id="desserts" class="menu-grid">
+                     <?php if (!empty($dessert_items)): ?>
                         <?php foreach ($dessert_items as $item): ?>
-                            <div class="menu-item">
-                                <img src="<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>">
-                                <div class="item-details">
-                                    <h3><?php echo htmlspecialchars($item['name']); ?></h3>
-                                    <p>A sweet treat to complete your meal.</p>
+                            <div class="menu-item-card">
+                                <div class="card-img">
+                                    <img src="<?php echo htmlspecialchars($item['image']); ?>" alt="<?php echo htmlspecialchars($item['name']); ?>">
                                 </div>
-                                <p class="item-price">₱<?php echo number_format($item['price'], 2); ?></p>
+                                <div class="card-body">
+                                    <div>
+                                        <h3 class="card-title"><?php echo htmlspecialchars($item['name']); ?></h3>
+                                        <p class="card-desc">A sweet treat to finish your meal.</p>
+                                    </div>
+                                    <div class="card-footer">
+                                        <span class="card-price">₱<?php echo number_format($item['price'], 2); ?></span>
+                                        <a href="product.php" class="btn btn-primary" style="padding: 8px 15px; border-radius: 50%; font-size: 0.9rem;"><i class="fas fa-plus"></i></a>
+                                    </div>
+                                </div>
                             </div>
                         <?php endforeach; ?>
                     <?php else: ?>
-                        <p>No desserts available at the moment.</p>
+                        <p style="text-align:center; grid-column:1/-1;">No desserts available.</p>
                     <?php endif; ?>
+                </div>
+                
+                <div style="text-align: center; margin-top: 3rem;">
+                    <a href="product.php" class="btn btn-dark">Explore Full Menu</a>
                 </div>
             </div>
         </section>
         
-        <section id="about" class="about-section">
+        <section id="about" class="section-padding about-section">
             <div class="container">
-                <h2 class="section-title">About Cafe Emmanuel</h2>
-                <p class="section-subtitle">Founded in 2018, we believe in creating a warm, welcoming space where great coffee meets genuine hospitality.</p>
-                
-                <div class="features-grid">
-                    <div class="feature-card">
-                        <i class="fas fa-coffee"></i>
-                        <h3>Artisanal Coffee</h3>
-                        <p>We source our beans directly from small farms and roast them in-house to ensure the perfect cup every time.</p>
+                <div class="features-row">
+                    <div class="feature-box">
+                        <i class="fas fa-mug-hot"></i>
+                        <h4>Artisanal Coffee</h4>
+                        <p style="color: #666; margin-top: 10px;">We source beans directly from small farms and roast them in-house for the perfect cup.</p>
                     </div>
-                    <div class="feature-card">
+                    <div class="feature-box">
                         <i class="fas fa-heart"></i>
-                        <h3>Made with Love</h3>
-                        <p>Every dish and drink is prepared with care and attention to detail, using only the freshest ingredients.</p>
+                        <h4>Made with Love</h4>
+                        <p style="color: #666; margin-top: 10px;">Every dish and drink is prepared with care, using only the freshest ingredients.</p>
                     </div>
-                    <div class="feature-card">
+                    <div class="feature-box">
                         <i class="fas fa-users"></i>
-                        <h3>Community Hub</h3>
-                        <p>More than just a cafe, we're a gathering place where neighbors become friends and ideas come to life.</p>
+                        <h4>Community Hub</h4>
+                        <p style="color: #666; margin-top: 10px;">More than a cafe, we're a gathering place where neighbors become friends.</p>
                     </div>
                 </div>
 
-                <div class="story-section">
-                    <div class="story-content">
-                        <h3>Our Story</h3>
+                <div class="about-content">
+                    <div class="about-text">
+                        <h4 style="color:var(--primary-color); text-transform:uppercase; letter-spacing:1px; font-size:0.9rem;">Our Story</h4>
+                        <h3>A Tradition of Excellence</h3>
                         <p>What started as a simple dream to serve exceptional coffee has grown into a community cornerstone. We wanted to create a space that felt like an extension of your living room—comfortable, welcoming, and filled with the aroma of freshly roasted coffee.</p>
+                        <div class="stats-row">
+                            <div class="stat-item"><span class="stat-num">500+</span><span class="stat-label">Daily Cups</span></div>
+                            <div class="stat-item"><span class="stat-num">6</span><span class="stat-label">Years Serving</span></div>
+                            <div class="stat-item"><span class="stat-num">7</span><span class="stat-label">Days Open</span></div>
+                        </div>
                     </div>
-                    <div class="stats-grid">
-                        <div class="stat-box"><strong>500+</strong><span>Cups per day</span></div>
-                        <div class="stat-box"><strong>6</strong><span>Years serving</span></div>
-                        <div class="stat-box"><strong>7</strong><span>Days a week</span></div>
-                        <div class="stat-box"><strong>1</strong><span>Amazing team</span></div>
+                    <div class="about-image">
+                        <img src="Cover-Photo.jpg" alt="Cafe Interior" style="width:100%; border-radius:20px; box-shadow:0 10px 30px rgba(0,0,0,0.1);">
                     </div>
                 </div>
             </div>
         </section>
         
-        <section id="contact" class="contact-section">
+        <section id="contact" class="section-padding contact-section">
             <div class="container">
-                <h2 class="section-title">Visit Us</h2>
-                <p class="section-subtitle">Come experience our cozy atmosphere and exceptional coffee. We'd love to welcome you to our cafe family.</p>
-                
                 <div class="contact-wrapper">
-                    <div class="contact-info">
-                        <div class="info-item">
+                    <div class="contact-details">
+                        <h3>Visit Us</h3>
+                        
+                        <div class="contact-item">
                             <i class="fas fa-map-marker-alt"></i>
                             <div>
-                                <strong>ADDRESS</strong>
-                                <p>San Antonio Road, Purok Dayat, San Antonio, Guagua, Pampanga 2003</p>
+                                <strong style="display:block; margin-bottom:4px;">Location</strong>
+                                <p>San Antonio, Guagua, 2003 Pampanga</p>
                             </div>
                         </div>
-                        <div class="info-item">
+                        <div class="contact-item">
                             <i class="fas fa-phone"></i>
                             <div>
-                                <strong>PHONE</strong>
+                                <strong style="display:block; margin-bottom:4px;">Phone</strong>
                                 <p>(555) 123-CAFE</p>
                             </div>
                         </div>
-                        <div class="info-item">
+                        <div class="contact-item">
                             <i class="fas fa-envelope"></i>
                             <div>
-                                <strong>EMAIL</strong>
-                                <p>hello@Cafeemmanuel.com</p>
+                                <strong style="display:block; margin-bottom:4px;">Email</strong>
+                                <p>hello@CafeEmmanuel.com</p>
                             </div>
                         </div>
 
                         <div class="hours-box">
-                            <h4><i class="fas fa-clock"></i> Hours of Operation</h4>
-                            <ul>
-                                <li><span>Monday - Friday</span> <span>6:00 AM - 8:00 PM</span></li>
-                                <li><span>Saturday</span> <span>7:00 AM - 9:00 PM</span></li>
-                                <li><span>Sunday</span> <span>7:00 AM - 7:00 PM</span></li>
-                            </ul>
-                        </div>
-                        <div class="contact-buttons">
-                            <a href="#" class="btn btn-dark">Get Directions</a>
-                            <a href="#" class="btn btn-outline">Call Now</a>
+                            <h4 style="color:white; margin-bottom:15px; border-bottom:1px solid rgba(255,255,255,0.2); padding-bottom:10px;">Opening Hours</h4>
+                            <div class="hours-row"><span>Mon - Fri</span> <span>6:00 AM - 8:00 PM</span></div>
+                            <div class="hours-row"><span>Saturday</span> <span>7:00 AM - 9:00 PM</span></div>
+                            <div class="hours-row"><span>Sunday</span> <span>7:00 AM - 7:00 PM</span></div>
                         </div>
                     </div>
-                    <div class="contact-map">
-                        <iframe src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d15418.99539257606!2d120.6283333!3d14.9785!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x33965f3583168961%3A0x199271167195b053!2sSan%20Antonio%2C%20Guagua%2C%20Pampanga!5e0!3m2!1sen!2sph!4v1697520335832!5m2!1sen!2sph" width="100%" height="100%" style="border:0;" allowfullscreen="" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+                    <div class="map-container">
+                        <iframe src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d15418.99539257606!2d120.6283333!3d14.9785!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x33965f3583168961%3A0x199271167195b053!2sSan%20Antonio%2C%20Guagua%2C%20Pampanga!5e0!3m2!1sen!2sph!4v1697520335832!5m2!1sen!2sph" allowfullscreen="" loading="lazy"></iframe>
                     </div>
                 </div>
             </div>
         </section>
 
-        <section class="newsletter-section">
+        <section class="section-padding newsletter-section">
             <div class="container">
-                <div class="newsletter-content">
-                    <h3>Stay Connected</h3>
-                    <p>Subscribe to our newsletter for special offers, new menu items, and cafe updates.</p>
+                <div class="newsletter-card">
+                    <h2 style="font-family: var(--font-heading);">Stay Connected</h2>
+                    <p style="color:#666;">Subscribe to our newsletter for special offers, new menu items, and cafe updates.</p>
                     <form class="newsletter-form">
-                        <input type="email" placeholder="Enter your email" required>
-                        <button type="submit">Subscribe</button>
+                        <input type="email" placeholder="Enter your email address" class="newsletter-input" required>
+                        <button type="submit" class="btn btn-primary">Subscribe</button>
                     </form>
                 </div>
             </div>
         </section>
     </main>
 
-    <footer class="new-footer">
+    <footer class="footer">
         <div class="container">
-            <div class="footer-grid">
-                <div class="footer-about">
-                    <h4 class="footer-logo">Cafe Emmanuel</h4>
-                    <p>—where every cup is a brushstroke of flavor and every moment, a work of art.</p>
-                    <div class="social-links">
-                        <a href="https://www.facebook.com/profile.php?id=61574968445731" aria-label="Facebook"><i class="fab fa-facebook-f"></i></a>
-                        <a href="https://www.instagram.com/cafeemmanuelph/" aria-label="Instagram"><i class="fab fa-instagram"></i></a>
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <h3><span style="color:var(--primary-color);">C</span>afe Emmanuel</h3>
+                    <p>Your neighborhood destination for exceptional coffee, delicious food, and warm hospitality.</p>
+                    <div class="socials">
+                        <a href="#" class="social-link"><i class="fab fa-facebook-f"></i></a>
+                        <a href="#" class="social-link"><i class="fab fa-instagram"></i></a>
+                        <a href="#" class="social-link"><i class="fab fa-twitter"></i></a>
                     </div>
                 </div>
-                <div class="footer-contact">
+                
+                <div class="footer-col">
+                    <h4>Quick Links</h4>
+                    <ul class="footer-links">
+                        <li><a href="#home">Home</a></li>
+                        <li><a href="product.php">Menu</a></li>
+                        <li><a href="about.php">About Us</a></li>
+                        <li><a href="contact.php">Contact</a></li>
+                    </ul>
+                </div>
+                
+                <div class="footer-col">
                     <h4>Contact Info</h4>
-                    <p>San Antonio Road, Purok Dayat, San Antonio, Guagua, Pampanga 2003</p>
-                    <p>(555) 123-CAFE</p>
-                    <p>hello@CafeEmmanuel.com</p>
+                    <ul class="footer-links">
+                        <li><i class="fas fa-map-marker-alt" style="margin-right:8px; color:var(--primary-color);"></i> San Antonio, Guagua</li>
+                        <li><i class="fas fa-phone" style="margin-right:8px; color:var(--primary-color);"></i> (555) 123-CAFE</li>
+                        <li><i class="fas fa-envelope" style="margin-right:8px; color:var(--primary-color);"></i> hello@cafeemmanuel.com</li>
+                    </ul>
                 </div>
             </div>
-            <div class="footer-bottom">
+            <div class="copyright">
                 <p>© 2025 Cafe Emmanuel. All rights reserved.</p>
             </div>
         </div>
     </footer>
 
-    <div id="loginModal" class="modal">
-        <div class="modal-content">
-            <span class="close-btn" id="closeLoginModal">×</span>
-            <h2>Login to Cafe Emmanuel</h2>
-            <?php if ($login_error): ?><p style="color:red;"><?php echo $login_error; ?></p><?php endif; ?>
-            <form id="loginFormModal" method="POST" action="index.php">
-            <input type="text" name="identifier" placeholder="Email or Username" required>
-            <input type="password" name="password" placeholder="Password" required>
-            <div class="options">
-                <label><input type="checkbox" name="remember"> Remember me</label>
-                <a href="#" id="openForgotPassword">Forgot Password?</a>
+    <div id="loginModal" class="modal-overlay" <?php if ($login_error) echo 'style="display:flex;"'; ?>>
+        <div class="modal-box">
+            <span class="modal-close" onclick="closeModal('loginModal')">×</span>
+            <h2 class="modal-title">Welcome Back</h2>
+            <?php if ($login_error): ?><p style="color: #dc3545; text-align: center; margin-bottom: 15px; font-size: 0.9rem;"><?php echo $login_error; ?></p><?php endif; ?>
+            <form method="POST" action="index.php">
+                <div class="input-group">
+                    <i class="fas fa-envelope input-icon"></i>
+                    <input type="text" name="identifier" placeholder="Email or Username" class="input-field" required>
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-lock input-icon"></i>
+                    <input type="password" name="password" placeholder="Password" class="input-field" required>
+                </div>
+                <div class="modal-options">
+                    <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" name="remember"> Remember me</label>
+                    <a href="#" onclick="switchModal('loginModal', 'forgotPasswordModal')" class="link-highlight">Forgot Password?</a>
+                </div>
+                <button type="submit" name="login" class="btn btn-primary modal-btn">Login</button>
+            </form>
+            <div class="modal-footer">
+                Don't have an account? <a href="#" onclick="switchModal('loginModal', 'registerModal')" class="link-highlight">Register</a>
             </div>
-            <button type="submit" name="login">Login</button>
-            <p class="register">Don't you have an account? <a href="#" id="showRegisterModal">Register</a></p>
-            </form>
         </div>
     </div>
 
-    <div id="registerModal" class="modal">
-        <div class="modal-content">
-            <span class="close-btn" id="closeRegisterModal">×</span>
-            <h2>Register to CafeEmmanuel</h2>
-            <?php if ($register_error): ?><p style="color:red;"><?php echo $register_error; ?></p><?php endif; ?>
-            <?php if ($register_success): ?><p style="color:green;"><?php echo $register_success; ?></p><?php endif; ?>
+    <div id="registerModal" class="modal-overlay" <?php if ($register_error) echo 'style="display:flex;"'; ?>>
+        <div class="modal-box" style="max-width: 450px;">
+            <span class="modal-close" onclick="closeModal('registerModal')">×</span>
+            <h2 class="modal-title">Create Account</h2>
+            <?php if ($register_error): ?><p style="color: #dc3545; text-align: center; margin-bottom: 10px; font-size: 0.9rem;"><?php echo $register_error; ?></p><?php endif; ?>
+            <?php if ($register_success): ?><p style="color: #28a745; text-align: center; margin-bottom: 10px; font-size: 0.9rem;"><?php echo $register_success; ?></p><?php endif; ?>
             <form method="POST" action="index.php">
-                <input type="text" name="fullname" placeholder="Full Name" required minlength="8">
-                <input type="text" name="username" placeholder="Username" required minlength="4">
-                <input type="email" name="email" placeholder="Email" required>
-                <input type="tel" name="contact" placeholder="Contact Number" pattern="[0-9]{10,15}"  title="Contact number must be 10-15 digits">
-                <select name="gender" required style="width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box;">
-                    <option value="">Select Gender</option>
-                    <option value="Male">Male</option>
-                    <option value="Female">Female</option>
-                    <option value="Non-Binary">Non-Binary</option>
-                    <option value="Prefer not to say">Prefer not to say</option>
-                </select>
-                <input type="password" name="password" placeholder="Password" required minlength="8" pattern="^(?=.*[A-Z]).{8,}$" title="Password must be at least 8 characters and contain one capital letter">
-                <input type="password" name="confirm_password" placeholder="Confirm Password" required>
-                <button type="submit" name="register">Register</button>
-                <p class="login">Have an account? <a href="#" id="showLoginModal">Login</a></p>
+                <div class="input-group">
+                    <i class="fas fa-user input-icon"></i>
+                    <input type="text" name="fullname" placeholder="Full Name" class="input-field" required minlength="8">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-at input-icon"></i>
+                    <input type="text" name="username" placeholder="Username" class="input-field" required minlength="4">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-envelope input-icon"></i>
+                    <input type="email" name="email" placeholder="Email Address" class="input-field" required>
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-phone input-icon"></i>
+                    <input type="tel" name="contact" placeholder="Contact Number" class="input-field" pattern="[0-9]{10,15}">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-venus-mars input-icon"></i>
+                    <select name="gender" class="input-field" required>
+                        <option value="" disabled selected>Select Gender</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                        <option value="Non-Binary">Non-Binary</option>
+                        <option value="Prefer not to say">Prefer not to say</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-lock input-icon"></i>
+                    <input type="password" name="password" placeholder="Password (Min 8 chars, 1 Uppercase)" class="input-field" required minlength="8" pattern="^(?=.*[A-Z]).{8,}$">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-check-circle input-icon"></i>
+                    <input type="password" name="confirm_password" placeholder="Confirm Password" class="input-field" required>
+                </div>
+                <button type="submit" name="register" class="btn btn-primary modal-btn">Register</button>
             </form>
+            <div class="modal-footer">
+                Already have an account? <a href="#" onclick="switchModal('registerModal', 'loginModal')" class="link-highlight">Login</a>
+            </div>
         </div>
     </div>
 
-    <div id="otpModal" class="modal" <?php if(isset($_SESSION['show_otp_modal']) && $_SESSION['show_otp_modal']): ?>style="display:block;"<?php endif; ?>>
-        <div class="modal-content">
-            <span class="close-btn" id="closeOtpModal">×</span>
-            <h2>Verify Your Email</h2>
-            <p style="font-size:14px; color:#666; margin-bottom:15px;">We've sent a 6-digit code to <strong><?php echo htmlspecialchars($_SESSION['otp_email'] ?? ''); ?></strong></p>
-            <?php if (isset($_SESSION['otp_resent']) && $_SESSION['otp_resent']): unset($_SESSION['otp_resent']); ?><p style="color:green; font-size:14px;">New code sent! Check your email.</p><?php endif; ?>
-            <?php if ($otp_error): ?><p style="color:red; font-size:14px;"><?php echo $otp_error; ?></p><?php endif; ?>
+    <div id="otpModal" class="modal-overlay" <?php if(isset($_SESSION['show_otp_modal']) && $_SESSION['show_otp_modal']): ?>style="display:flex;"<?php endif; ?>>
+        <div class="modal-box">
+            <span class="modal-close" onclick="window.location.href='logout.php'">×</span>
+            <h2 class="modal-title">Verify Email</h2>
+            <p style="text-align: center; color: #666; margin-bottom: 1.5rem;">We've sent a code to <br><strong><?php echo htmlspecialchars($_SESSION['otp_email'] ?? ''); ?></strong></p>
+            
+            <?php if (isset($_SESSION['otp_resent']) && $_SESSION['otp_resent']): unset($_SESSION['otp_resent']); ?>
+                <p style="color: #28a745; text-align: center; margin-bottom: 10px;">New code sent!</p>
+            <?php endif; ?>
+            <?php if ($otp_error): ?><p style="color: #dc3545; text-align: center; margin-bottom: 10px;"><?php echo $otp_error; ?></p><?php endif; ?>
+            
             <form method="POST" action="index.php">
-                <input type="text" name="otp_code" placeholder="Enter 6-digit code" required maxlength="6" pattern="[0-9]{6}" style="text-align:center; font-size:20px; letter-spacing:8px; font-weight:bold;">
-                <button type="submit" name="verify_otp">Verify</button>
-                <div style="display:flex; justify-content:space-between; margin-top:15px; font-size:13px;">
-                    <a href="resend_otp.php" style="color:#E03A3E; text-decoration:none; font-weight:600;">Resend Code</a>
-                    <a href="logout.php" style="color:#666; text-decoration:none;">Use different account</a>
+                <div class="input-group">
+                    <i class="fas fa-key input-icon"></i>
+                    <input type="text" name="otp_code" placeholder="000000" class="input-field" required maxlength="6" pattern="[0-9]{6}" style="text-align: center; letter-spacing: 8px; font-size: 1.5rem; font-weight: 700;">
                 </div>
+                <button type="submit" name="verify_otp" class="btn btn-primary modal-btn">Verify</button>
             </form>
+            <div class="modal-options" style="margin-top: 1.5rem; justify-content: center; gap: 15px;">
+                <a href="resend_otp.php" class="link-highlight">Resend Code</a>
+                <a href="logout.php" style="color: #999;">Use different account</a>
+            </div>
         </div>
     </div>
 
-    <!-- Forgot Password Modal -->
-    <div id="forgotPasswordModal" class="modal">
-        <div class="modal-content">
-            <span class="close-btn" id="closeForgotPassword">×</span>
-            <h2 id="forgotPasswordTitle">Forgot Password?</h2>
-            <p id="forgotPasswordSubtitle" style="font-size:14px; color:#666; margin-bottom:20px;">Choose how to receive your password reset code.</p>
-            
-            <div id="forgotPasswordMessage" style="display:none; padding:12px; border-radius:6px; margin-bottom:15px; font-size:14px;"></div>
-            
-            <form id="forgotPasswordForm">
-                <div style="margin-bottom:20px;">
-                    <p style="font-weight:600; margin-bottom:10px; font-size:14px;">Select reset method:</p>
-                    <div style="display:flex; gap:10px;">
-                        <label style="flex:1; display:flex; flex-direction:column; align-items:center; padding:15px; border:2px solid #B95A4B; background:#fff5f5; border-radius:8px; cursor:pointer; transition:all 0.3s;" id="emailMethodLabel">
-                            <input type="radio" name="resetMethod" value="email" checked style="display:none;">
-                            <i class="fa fa-envelope" style="font-size:2rem; color:#B95A4B; margin-bottom:5px;"></i>
-                            <span style="font-size:0.9rem; font-weight:600;">Email</span>
-                        </label>
-                        <label style="flex:1; display:flex; flex-direction:column; align-items:center; padding:15px; border:2px solid #e0e0e0; border-radius:8px; cursor:pointer; transition:all 0.3s;" id="phoneMethodLabel">
-                            <input type="radio" name="resetMethod" value="phone" style="display:none;">
-                            <i class="fa fa-mobile-alt" style="font-size:2rem; color:#B95A4B; margin-bottom:5px;"></i>
-                            <span style="font-size:0.9rem; font-weight:600;">SMS</span>
-                        </label>
-                    </div>
-                </div>
-                
-                <!-- Email input (shown by default) -->
-                <div id="emailInputSection">
-                    <label style="display:block; font-weight:600; margin-bottom:8px; font-size:14px; color:#555;">
-                        <i class="fa fa-envelope"></i> Email Address
-                    </label>
-                    <input type="email" id="forgotEmail" placeholder="Enter your email address" required style="width:100%; padding:10px; margin:8px 0; border:1px solid #ccc; border-radius:6px; box-sizing:border-box;">
-                </div>
-                
-                <!-- Phone input (hidden by default) -->
-                <div id="phoneInputSection" style="display:none;">
-                    <label style="display:block; font-weight:600; margin-bottom:8px; font-size:14px; color:#555;">
-                        <i class="fa fa-mobile-alt"></i> Phone Number
-                    </label>
-                    <input type="tel" id="forgotPhone" placeholder="Enter your phone number" pattern="[0-9]{10,15}" style="width:100%; padding:10px; margin:8px 0; border:1px solid #ccc; border-radius:6px; box-sizing:border-box;">
-                    <small style="display:block; color:#666; font-size:12px; margin-top:5px;">Enter the phone number registered with your account</small>
-                </div>
-                
-                <button type="submit" style="background-color:#111; color:white; padding:12px 20px; margin:20px 0 10px 0; border:none; border-radius:6px; cursor:pointer; width:100%; font-size:16px; transition:background 0.3s;">
-                    <i class="fa fa-paper-plane"></i> Send Reset Code
-                </button>
-                <button type="button" id="backToLogin" style="background-color:transparent; color:#B95A4B; padding:10px; border:2px solid #B95A4B; border-radius:6px; cursor:pointer; width:100%; font-size:14px; transition:all 0.3s;">
-                    <i class="fa fa-arrow-left"></i> Back to Login
-                </button>
-            </form>
+    <div id="forgotPasswordModal" class="modal-overlay">
+        <div class="modal-box">
+            <span class="modal-close" onclick="closeModal('forgotPasswordModal')">×</span>
+            <h2 class="modal-title">Reset Password</h2>
+            <div id="forgotPasswordContent">
+                <p style="text-align:center; margin-bottom:20px; color:#666;">Please visit the reset page to recover your account.</p>
+                <a href="forgot_password.php" class="btn btn-primary modal-btn" style="display:block; text-decoration:none; text-align:center;">Go to Reset Page</a>
+            </div>
+            <div class="modal-footer">
+                Remember your password? <a href="#" onclick="switchModal('forgotPasswordModal', 'loginModal')" class="link-highlight">Login</a>
+            </div>
         </div>
     </div>
 
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            // OTP modal controls
-            const otpModal = document.getElementById("otpModal");
-            const closeOtpModal = document.getElementById("closeOtpModal");
-            if(closeOtpModal) closeOtpModal.onclick = () => { 
-                if(confirm('Are you sure? You will need to login again.')) {
-                    window.location.href = 'logout.php';
+        // --- Slider Logic ---
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.hero-slide');
+        
+        function nextSlide() {
+            // Remove active class from current slide
+            slides[currentSlide].classList.remove('active');
+            // Calculate next index
+            currentSlide = (currentSlide + 1) % slides.length;
+            // Add active class to next slide
+            slides[currentSlide].classList.add('active');
+        }
+
+        // Change slide every 5 seconds
+        setInterval(nextSlide, 5000);
+
+        // --- Modal Functions ---
+        function openModal(modalId) {
+            document.getElementById(modalId).style.display = 'flex';
+        }
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+        function switchModal(fromId, toId) {
+            closeModal(fromId);
+            openModal(toId);
+        }
+
+        // Login button listeners
+        const loginBtns = document.querySelectorAll('#loginTrigger, .mobile-link a[href="#"]');
+        loginBtns.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                if(e.target.innerText === "Login" || e.target.id === "loginTrigger") {
+                    e.preventDefault();
+                    openModal('loginModal');
                 }
-            };
-            const header = document.querySelector('.header');
-            const hamburger = document.querySelector('.hamburger');
-            const navMenu = document.querySelector('.nav-menu');
-            const tabLinks = document.querySelectorAll('.tab-link');
-            const menuContents = document.querySelectorAll('.menu-content');
-
-            if (header) {
-                window.addEventListener('scroll', () => {
-                    if (window.scrollY > 50) {
-                        header.classList.add('scrolled');
-                    } else {
-                        header.classList.remove('scrolled');
-                    }
-                });
-            }
-
-            if (hamburger) {
-                hamburger.addEventListener('click', () => {
-                    hamburger.classList.toggle('active');
-                    navMenu.classList.toggle('active');
-                });
-            }
-
-            tabLinks.forEach(tab => {
-                tab.addEventListener('click', () => {
-                    tabLinks.forEach(item => item.classList.remove('active'));
-                    menuContents.forEach(item => item.classList.remove('active'));
-
-                    const target = document.querySelector(`#${tab.dataset.tab}`);
-                    tab.classList.add('active');
-                    if (target) {
-                        target.classList.add('active');
-                    }
-                });
             });
         });
 
-        document.addEventListener("DOMContentLoaded", function() {
-            const loginModal = document.getElementById("loginModal");
-            const registerModal = document.getElementById("registerModal");
-            const loginBtn = document.getElementById("loginModalBtn");
-            const closeLoginModal = document.getElementById("closeLoginModal");
-            const closeRegisterModal = document.getElementById("closeRegisterModal");
-            const showRegisterModal = document.getElementById("showRegisterModal");
-            const showLoginModal = document.getElementById("showLoginModal");
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.get('action') === 'login') {
-                if (loginModal) {
-                    loginModal.style.display = "block";
-                }
-            }
-            if(loginBtn) loginBtn.onclick = () => { loginModal.style.display = "block"; }
-            if(closeLoginModal) closeLoginModal.onclick = () => { loginModal.style.display = "none"; }
-            if(closeRegisterModal) closeRegisterModal.onclick = () => { registerModal.style.display = "none"; }
-            window.onclick = (event) => {
-                if (event.target == loginModal) loginModal.style.display = "none";
-                if (event.target == registerModal) registerModal.style.display = "none";
-            }
-            if(showRegisterModal) showRegisterModal.onclick = (e) => { e.preventDefault(); loginModal.style.display = "none"; registerModal.style.display = "block"; }
-            if(showLoginModal) showLoginModal.onclick = (e) => { e.preventDefault(); registerModal.style.display = "none"; loginModal.style.display = "block"; }
-            const profileDropdown = document.querySelector('.profile-dropdown');
-            if (profileDropdown) {
-                profileDropdown.addEventListener('click', function(event) {
-                    event.stopPropagation();
-                    this.classList.toggle('active');
-                });
-                window.addEventListener('click', function() {
-                    if(profileDropdown.classList.contains('active')) {
-                        profileDropdown.classList.remove('active');
-                    }
-                });
-            }
-            
-            // Forgot Password Modal
-            const forgotPasswordModal = document.getElementById('forgotPasswordModal');
-            const openForgotPassword = document.getElementById('openForgotPassword');
-            const closeForgotPassword = document.getElementById('closeForgotPassword');
-            const forgotMessage = document.getElementById('forgotPasswordMessage');
-            const emailMethodLabel = document.getElementById('emailMethodLabel');
-            const phoneMethodLabel = document.getElementById('phoneMethodLabel');
-            const emailInputSection = document.getElementById('emailInputSection');
-            const phoneInputSection = document.getElementById('phoneInputSection');
-            const forgotEmailInput = document.getElementById('forgotEmail');
-            const forgotPhoneInput = document.getElementById('forgotPhone');
-            const backToLogin = document.getElementById('backToLogin');
-            
-            // Method selection - toggle input fields
-            document.querySelectorAll('input[name="resetMethod"]').forEach(radio => {
-                radio.addEventListener('change', function() {
-                    if (this.value === 'email') {
-                        emailMethodLabel.style.borderColor = '#B95A4B';
-                        emailMethodLabel.style.background = '#fff5f5';
-                        phoneMethodLabel.style.borderColor = '#e0e0e0';
-                        phoneMethodLabel.style.background = 'white';
-                        emailInputSection.style.display = 'block';
-                        phoneInputSection.style.display = 'none';
-                        forgotEmailInput.required = true;
-                        forgotPhoneInput.required = false;
-                    } else {
-                        emailMethodLabel.style.borderColor = '#e0e0e0';
-                        emailMethodLabel.style.background = 'white';
-                        phoneMethodLabel.style.borderColor = '#B95A4B';
-                        phoneMethodLabel.style.background = '#fff5f5';
-                        emailInputSection.style.display = 'none';
-                        phoneInputSection.style.display = 'block';
-                        forgotEmailInput.required = false;
-                        forgotPhoneInput.required = true;
-                    }
-                });
+        // Tab Switching
+        function switchTab(tabId, btn) {
+            document.querySelectorAll('.menu-grid').forEach(grid => grid.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            btn.classList.add('active');
+        }
+
+        // Mobile Menu Toggle
+        const hamburger = document.querySelector('.hamburger');
+        const navMenu = document.querySelector('.nav-menu');
+        const mobileLinks = document.querySelectorAll('.mobile-link');
+
+        hamburger.addEventListener('click', () => {
+            navMenu.classList.toggle('active');
+            mobileLinks.forEach(link => {
+                link.style.display = navMenu.classList.contains('active') ? 'block' : 'none';
             });
-            
-            if(openForgotPassword) {
-                openForgotPassword.onclick = (e) => {
-                    e.preventDefault();
-                    loginModal.style.display = 'none';
-                    forgotPasswordModal.style.display = 'block';
-                    forgotMessage.style.display = 'none';
-                    // Reset to email by default
-                    document.querySelector('input[name="resetMethod"][value="email"]').checked = true;
-                    emailInputSection.style.display = 'block';
-                    phoneInputSection.style.display = 'none';
-                    forgotEmailInput.value = '';
-                    forgotPhoneInput.value = '';
-                };
+        });
+
+        // Close modals on outside click
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal-overlay')) {
+                event.target.style.display = "none";
             }
-            
-            if(closeForgotPassword) {
-                closeForgotPassword.onclick = () => {
-                    forgotPasswordModal.style.display = 'none';
-                };
-            }
-            
-            if(backToLogin) {
-                backToLogin.onclick = () => {
-                    forgotPasswordModal.style.display = 'none';
-                    loginModal.style.display = 'block';
-                };
-            }
-            
-            window.onclick = (event) => {
-                if (event.target == forgotPasswordModal) forgotPasswordModal.style.display = 'none';
-            };
-            
-            // Form submission
-            document.getElementById('forgotPasswordForm').addEventListener('submit', async function(e) {
-                e.preventDefault();
-                const method = document.querySelector('input[name="resetMethod"]:checked').value;
-                const identifier = method === 'email' ? forgotEmailInput.value : forgotPhoneInput.value;
-                
-                if (!identifier) {
-                    showMessage('Please enter your ' + (method === 'email' ? 'email address' : 'phone number'), 'error');
-                    return;
-                }
-                
-                showMessage('Sending reset code...', 'info');
-                
-                try {
-                    const formData = new FormData();
-                    formData.append('ajax', '1');
-                    formData.append('send_reset_code', '1');
-                    formData.append('identifier', identifier);
-                    formData.append('reset_method', method);
-                    
-                    const response = await fetch('forgot_password.php', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        showMessage(data.message + ' Redirecting...', 'success');
-                        setTimeout(() => {
-                            window.location.href = 'reset_password.php';
-                        }, 2000);
-                    } else {
-                        showMessage(data.message, 'error');
-                    }
-                } catch (error) {
-                    showMessage('An error occurred. Please try again.', 'error');
-                }
-            });
-            
-            // Show message helper
-            function showMessage(message, type) {
-                if (!message) {
-                    forgotMessage.style.display = 'none';
-                    return;
-                }
-                forgotMessage.style.display = 'block';
-                forgotMessage.textContent = message;
-                if (type === 'error') {
-                    forgotMessage.style.background = '#f8d7da';
-                    forgotMessage.style.color = '#721c24';
-                    forgotMessage.style.border = '1px solid #f5c6cb';
-                } else if (type === 'success') {
-                    forgotMessage.style.background = '#d4edda';
-                    forgotMessage.style.color = '#155724';
-                    forgotMessage.style.border = '1px solid #c3e6cb';
-                } else {
-                    forgotMessage.style.background = '#d1ecf1';
-                    forgotMessage.style.color = '#0c5460';
-                    forgotMessage.style.border = '1px solid #bee5eb';
-                }
+        }
+
+        // Header scroll effect
+        window.addEventListener('scroll', () => {
+            const header = document.querySelector('.header');
+            if (window.scrollY > 50) {
+                header.classList.add('scrolled');
+            } else {
+                header.classList.remove('scrolled');
             }
         });
     </script>
