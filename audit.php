@@ -4,11 +4,12 @@
 // PREVENTS CRASHES: Uses try-catch to fail silently if DB is wrong
 
 function audit($userId, $action, $entityType = null, $entityId = null, $details = null) {
-    // --- ENTER YOUR LIVE DATABASE CREDENTIALS HERE ---
+    // --- FIXED: LOCALHOST CREDENTIALS AND UNIFIED DATABASE NAME ---
     $db_host = 'localhost';
-    $db_user = 'u763865560_Mancave'; 
-    $db_pass = 'ManCave2025'; 
-    $db_name = 'u763865560_EmmanuelCafeDB'; 
+    $db_user = 'root'; 
+    $db_pass = ''; 
+    $db_name = 'u763865560_EmmanuelCafeDB'; // Using the user's new main database name
+    // --- END FIXED ---
 
     try {
         // Report errors as exceptions so we can catch them
@@ -33,7 +34,6 @@ function audit($userId, $action, $entityType = null, $entityId = null, $details 
 
     } catch (Exception $e) {
         // SILENT FAILURE: If database connects fail, do NOTHING.
-        // This prevents the HTTP 500 Error on recently_deleted.php
         return;
     }
 }
