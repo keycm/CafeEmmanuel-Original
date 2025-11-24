@@ -1,14 +1,12 @@
 <?php
 // config.php
-// Gracefully handle missing DB by creating it (dev-friendly)
-
-// Turn off mysqli exceptions so we can handle errors ourselves
+// FIXED: Using LOCALHOST credentials and the new unified database name.
 mysqli_report(MYSQLI_REPORT_OFF);
 
 $host = 'localhost';
-$user = 'root';
-$pass = '';
-$db   = 'login_system';
+$user = 'root'; 
+$pass = ''; 
+$db   = 'u763865560_EmmanuelCafeDB'; // Set to the user's new main database name
 
 // 1) Connect to MySQL server (without selecting a DB first)
 $server = mysqli_connect($host, $user, $pass);
@@ -103,7 +101,7 @@ $createDeletedUsersSql = "CREATE TABLE IF NOT EXISTS `recently_deleted_users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci";
 mysqli_query($conn, $createDeletedUsersSql);
 
-// 4c) Ensure audit log table exists in login_system
+// 4c) Ensure audit log table exists in the main database
 $createAuditSql = "CREATE TABLE IF NOT EXISTS `audit_log` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `user_id` INT NULL,
@@ -155,39 +153,44 @@ mysqli_query($conn, $createPasswordResetsSql);
 if (!defined('OTP_ENABLED')) define('OTP_ENABLED', true);              // master switch
 if (!defined('OTP_REQUIRE_FOR_ADMINS')) define('OTP_REQUIRE_FOR_ADMINS', true); // OTP now required for admins
 
-// 5) Ensure addproduct.orders has user_id column to link orders to accounts
-$ap = @new mysqli($host, $user, $pass, 'addproduct');
-if ($ap && !$ap->connect_error) {
-    // Check if column exists
-    $schema = 'addproduct';
-    $chk = $ap->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='orders' AND COLUMN_NAME='user_id'");
-    if ($chk) {
-        $chk->bind_param('s', $schema);
-        $chk->execute();
-        $res = $chk->get_result();
-        $row = $res ? $res->fetch_assoc() : null;
-        $exists = $row && (int)$row['c'] > 0;
-        $chk->close();
-        if (!$exists) {
-            // Add nullable user_id for back-compat; future orders should set this
-            @$ap->query("ALTER TABLE `orders` ADD COLUMN `user_id` INT NULL AFTER `id`");
-            // Optional index for faster lookups
-            @$ap->query("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON `orders` (`user_id`)");
-        }
-    }
+// 5) Ensure tables (orders, cart, products) in this unified DB have necessary columns
+$schema = $db;
+
+// Check 'orders' table for user_id
+$chk = $conn->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='orders' AND COLUMN_NAME='user_id'");
+if ($chk) {
+    $chk->bind_param('s', $db);
+    $chk->execute();
+    $res = $chk->get_result();
+    $exists = $res && ($res->fetch_assoc()['c']??0)>0;
+    $chk->close();
+    if (!$exists) { 
+        @$conn->query("ALTER TABLE `orders` ADD COLUMN `user_id` INT NULL AFTER `id`"); 
+        @$conn->query("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON `orders` (`user_id`)"); 
+    } 
 }
 
-// 6) Ensure addproduct.cart has linkage and cancellation fields
-if ($ap && !$ap->connect_error) {
-    $schema = 'addproduct';
-    // user_id column
-    $chk = $ap->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='cart' AND COLUMN_NAME='user_id'");
-    if ($chk) { $chk->bind_param('s', $schema); $chk->execute(); $res=$chk->get_result(); $exists = ($res && ($res->fetch_assoc()['c']??0)>0); $chk->close(); if (!$exists) { @$ap->query("ALTER TABLE `cart` ADD COLUMN `user_id` INT NULL AFTER `id`"); @$ap->query("CREATE INDEX IF NOT EXISTS idx_cart_user_id ON `cart` (`user_id`)"); } }
-    // cancel_reason
-    $chk = $ap->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='cart' AND COLUMN_NAME='cancel_reason'");
-    if ($chk) { $chk->bind_param('s', $schema); $chk->execute(); $res=$chk->get_result(); $exists = ($res && ($res->fetch_assoc()['c']??0)>0); $chk->close(); if (!$exists) { @$ap->query("ALTER TABLE `cart` ADD COLUMN `cancel_reason` VARCHAR(255) NULL AFTER `status`"); } }
-    // cancelled_at
-    $chk = $ap->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='cart' AND COLUMN_NAME='cancelled_at'");
-    if ($chk) { $chk->bind_param('s', $schema); $chk->execute(); $res=$chk->get_result(); $exists = ($res && ($res->fetch_assoc()['c']??0)>0); $chk->close(); if (!$exists) { @$ap->query("ALTER TABLE `cart` ADD COLUMN `cancelled_at` TIMESTAMP NULL AFTER `cancel_reason`"); } }
+// Check 'cart' table for linkage and cancellation fields
+$chk = $conn->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='cart' AND COLUMN_NAME='user_id'");
+if ($chk) { 
+    $chk->bind_param('s', $db); $chk->execute(); $res=$chk->get_result(); $exists = ($res && ($res->fetch_assoc()['c']??0)>0); $chk->close(); 
+    if (!$exists) { 
+        @$conn->query("ALTER TABLE `cart` ADD COLUMN `user_id` INT NULL AFTER `id`"); 
+        @$conn->query("CREATE INDEX IF NOT EXISTS idx_cart_user_id ON `cart` (`user_id`)"); 
+    } 
+}
+$chk = $conn->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='cart' AND COLUMN_NAME='cancel_reason'");
+if ($chk) { 
+    $chk->bind_param('s', $db); $chk->execute(); $res=$chk->get_result(); $exists = ($res && ($res->fetch_assoc()['c']??0)>0); $chk->close(); 
+    if (!$exists) { 
+        @$conn->query("ALTER TABLE `cart` ADD COLUMN `cancel_reason` VARCHAR(255) NULL AFTER `status`"); 
+    } 
+}
+$chk = $conn->prepare("SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='cart' AND COLUMN_NAME='cancelled_at'");
+if ($chk) { 
+    $chk->bind_param('s', $db); $chk->execute(); $res=$chk->get_result(); $exists = ($res && ($res->fetch_assoc()['c']??0)>0); $chk->close(); 
+    if (!$exists) { 
+        @$conn->query("ALTER TABLE `cart` ADD COLUMN `cancelled_at` TIMESTAMP NULL AFTER `cancel_reason`"); 
+    } 
 }
 ?>
