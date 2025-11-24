@@ -79,10 +79,9 @@ function getAuditLogs($conn, $limit = 100, $admin_id = null, $action = null) {
 }
 
 // Initialize audit logs table
-// FIXED: Renamed variable to $setup_conn to avoid closing the main $audit_conn in other scripts
-$setup_conn = new mysqli("localhost", "u763865560_Mancave", "ManCave2025", "u763865560_EmmanuelCafeDB");
+// FIXED: Using LOCALHOST credentials and unified database name.
+$setup_conn = new mysqli("localhost", "root", "", "u763865560_EmmanuelCafeDB");
 if (!$setup_conn->connect_error) {
     createAuditLogsTable($setup_conn);
     $setup_conn->close();
 }
-?>
