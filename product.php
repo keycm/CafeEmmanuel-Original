@@ -1,28 +1,33 @@
 <?php
 session_start();
-require_once 'config.php'; // Use the central config file for DB connection
-require_once 'audit.php';
 
-// Check database connection from config.php
+// --- 1. FIXED DATABASE CONNECTION ---
+// Instead of hardcoding "addproduct", we use the central config file.
+require_once 'config.php'; 
+
+// Ensure the connection is valid
 if (!isset($conn) || $conn->connect_error) {
     die("Connection failed: " . ($conn->connect_error ?? 'Database configuration error'));
 }
 
-// --- Fetch Products from Database ---
+// --- 2. Fetch Products from Database ---
 $products = [];
-// Note: Ensure your 'products' table exists in the database
+// We use the existing $conn variable from config.php
 $result = $conn->query("SELECT * FROM products WHERE stock > 0 ORDER BY category, name");
 if ($result) {
     while ($row = $result->fetch_assoc()) {
         $products[] = $row;
     }
 }
+// Note: We do NOT close $conn here because we need it for the registration logic below.
 
-// --- Registration Logic ---
+// --- 3. Registration Logic ---
 $register_error = '';
 $register_success = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
+    // We use the same $conn from config.php. No need to create a new connection.
+    
     $username = trim($_POST['username'] ?? '');
     $password = $_POST['password'] ?? '';
     $fullname = trim($_POST['fullname'] ?? '');
@@ -31,13 +36,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
     $gender   = trim($_POST['gender'] ?? '');
     $confirm  = $_POST['confirm_password'] ?? '';
 
+    // Validation
     if (!preg_match("/^[a-zA-Z\s]+$/", $fullname)) {
         $register_error = "Full name must contain only letters and spaces.";
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-         $register_error = "Invalid email format.";
+        $register_error = "Invalid email format.";
     } elseif (!empty($contact) && !preg_match("/^[0-9]{10,15}$/", $contact)) {
         $register_error = "Contact number must be 10-15 digits.";
-    } elseif (strlen($password) < 8 || !preg_match("/[A-Z]/", $password)) {
+    } elseif (!preg_match("/^(?=.*[A-Z]).{8,}$/", $password)) {
         $register_error = "Password must be at least 8 characters and have a capital letter.";
     } elseif ($password !== $confirm) {
         $register_error = "Passwords do not match!";
@@ -51,58 +57,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
         if ($stmt->num_rows > 0) {
             $register_error = "Email or Username already exists.";
         } else {
+            // Insert new user
             $hashed_password = password_hash($password, PASSWORD_DEFAULT);
             
-            // Prepare INSERT statement
+            // Insert statement
+            // We include 'is_verified' as 0 by default if your DB requires it, or rely on table defaults.
             $insert_stmt = $conn->prepare("INSERT INTO users (username, password, fullname, email, contact, gender) VALUES (?, ?, ?, ?, ?, ?)");
             $insert_stmt->bind_param("ssssss", $username, $hashed_password, $fullname, $email, $contact, $gender);
 
             if ($insert_stmt->execute()) {
-                $new_user_id = $insert_stmt->insert_id;
                 $register_success = "Registration successful! You can now login.";
-                
-                // Log the registration if audit system is available
-                if (function_exists('audit')) {
-                     audit($new_user_id, 'user_registered', 'users', $new_user_id, ['username' => $username]);
-                }
             } else {
                 $register_error = "Error: " . $insert_stmt->error;
             }
             $insert_stmt->close();
         }
         $stmt->close();
-    }
-}
-
-// --- Login Logic (Optional: Handle login directly here if needed, or rely on index.php) ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
-    // Redirect to index.php to handle login, passing POST data is tricky with redirect, 
-    // better to include the login logic or keep the form pointing to index.php
-    // For this fix, we will assume the form action points to index.php or handles it here.
-    // If your login modal form action is "product.php", add login logic here:
-    
-    $email = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
-    
-    $stmt = $conn->prepare("SELECT * FROM users WHERE email = ?");
-    $stmt->bind_param("s", $email);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    
-    if ($result->num_rows === 1) {
-        $user = $result->fetch_assoc();
-        if (password_verify($password, $user['password'])) {
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['fullname'] = $user['fullname'];
-            $_SESSION['role'] = $user['role'];
-             // Reload page to update UI
-            header("Location: product.php");
-            exit();
-        } else {
-             $login_error = "Invalid password.";
-        }
-    } else {
-         $login_error = "User not found.";
     }
 }
 ?>
@@ -115,314 +85,532 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Akaya+Telivigala&family=Archivo+Black&family=Archivo+Narrow:wght@400;700&family=Birthstone+Bounce:wght@500&family=Inknut+Antiqua:wght@600&family=Playfair+Display:wght@700&family=Lato:wght@400;700&display=swap" rel="stylesheet">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Akaya+Telivigala&family=Archivo+Black&family=Archivo+Narrow:wght@400;700&family=Birthstone+Bounce:wght@500&family=Inknut+Antiqua:wght@600&family=Playfair+Display:wght@400;600;700&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 
     <style>
+        /* --- Global Variables --- */
         :root {
             --primary-color: #B95A4B;
+            --primary-dark: #9C4538;
             --secondary-color: #3C2A21;
+            --accent-color: #E03A3E;
+            
             --text-color: #333;
+            --text-light: #666;
             --heading-color: #1F1F1F;
+            --bg-body: #FFFFFF;
+            --bg-light: #FCFBF8;
+            --bg-gray: #F9F9F9;
             --white: #FFFFFF;
             --border-color: #EAEAEA;
+
             --footer-bg-color: #1a120b;
             --footer-text-color: #ccc;
             --footer-link-hover: #FFC94A;
+
             --font-logo-cafe: 'Archivo Black', sans-serif;
             --font-logo-emmanuel: 'Birthstone Bounce', cursive;
             --font-nav: 'Inknut Antiqua', serif;
-            --font-body-default: 'Lato', sans-serif;
+            --font-hero: 'Akaya Telivigala', cursive;
+            --font-heading: 'Playfair Display', serif;
+            --font-body: 'Lato', sans-serif;
+            
             --nav-height: 90px;
         }
+
+        /* --- Reset & Basics --- */
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: var(--font-body-default); padding-top: var(--nav-height); background-color: #fff; }
-        .header { position: fixed; width: 100%; top: 0; z-index: 1000; height: var(--nav-height); transition: background-color 0.4s ease, backdrop-filter 0.4s ease; background: rgba(26, 18, 11, 0.85); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
-        .navbar { display: flex; justify-content: space-between; align-items: center; height: 100%; max-width: 1200px; margin: 0 auto; padding: 0 20px; }
-        .nav-logo { text-decoration: none; color: var(--white); display: flex; align-items: center; }
-        .logo-cafe { font-family: var(--font-logo-cafe); font-size: 40px; }
-        .logo-emmanuel { font-family: var(--font-logo-emmanuel); font-size: 40px; font-weight: 500; margin-left: 10px; }
-        .first-letter { color: #932432; }
-        .nav-menu { display: flex; list-style: none; gap: 3rem; }
-        .nav-link { font-family: var(--font-nav); font-size: 16px; font-weight: 600; color: #E0E0E0; text-decoration: none; transition: color 0.3s ease; }
+        html { scroll-behavior: smooth; scroll-padding-top: var(--nav-height); }
+        
+        body {
+            font-family: var(--font-body);
+            color: var(--text-color);
+            background-color: var(--bg-light);
+            line-height: 1.7;
+            overflow-x: hidden;
+            padding-top: var(--nav-height);
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+        a { text-decoration: none; color: inherit; transition: all 0.3s ease; }
+        ul { list-style: none; }
+
+        /* --- Header & Navigation --- */
+        .header {
+            position: fixed; width: 100%; top: 0; z-index: 1000; height: var(--nav-height);
+            background: transparent; transition: background 0.4s ease, box-shadow 0.4s ease;
+        }
+        .header.scrolled {
+            background: rgba(26, 18, 11, 0.98); box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        
+        .navbar { display: flex; justify-content: space-between; align-items: center; height: 100%; }
+        .nav-logo { display: flex; align-items: center; color: var(--white); }
+        .logo-cafe { font-family: var(--font-logo-cafe); font-size: 32px; letter-spacing: -1px; }
+        .logo-emmanuel { font-family: var(--font-logo-emmanuel); font-size: 38px; margin-left: 8px; color: var(--primary-color); font-weight: 500; }
+        
+        .nav-menu { display: flex; gap: 2.5rem; }
+        .nav-link {
+            font-family: var(--font-nav); font-size: 15px; font-weight: 500; color: rgba(255,255,255,0.9); position: relative; letter-spacing: 0.5px;
+        }
+        .nav-link::after {
+            content: ''; position: absolute; width: 0; height: 2px; bottom: -4px; left: 0; background-color: var(--footer-link-hover); transition: width 0.3s;
+        }
+        .nav-link:hover::after, .nav-link.active::after { width: 100%; }
         .nav-link:hover, .nav-link.active { color: var(--footer-link-hover); }
+
         .nav-right-cluster { display: flex; align-items: center; gap: 1.5rem; }
-        .nav-cart-link { color: var(--white); font-size: 1.2rem; text-decoration: none; transition: color 0.3s ease; }
-        .nav-cart-link:hover { color: var(--footer-link-hover); }
-        .nav-button { background-color: var(--footer-link-hover); color: var(--secondary-color); padding: 10px 22px; border-radius: 8px; text-decoration: none; font-weight: bold; transition: background-color 0.3s ease; border: none; cursor: pointer; }
-        .nav-button:hover { background-color: #e6b33a; }
-        .hamburger { display: none; margin-left: 1rem; cursor: pointer; }
-        .bar { display: block; width: 25px; height: 3px; margin: 5px auto; transition: all 0.3s ease-in-out; background-color: var(--white); }
-        .profile-dropdown { position: relative; display: inline-block; cursor: pointer; }
-        .profile-info { display: flex; align-items: center; gap: 8px; color: var(--white); }
-        .profile-info span { font-weight: 500; font-size: 16px; font-family: var(--font-nav); color: #E0E0E0; transition: color 0.3s ease; }
-        .profile-info i { font-size: 1.1rem; color: #E0E0E0; transition: color 0.3s ease; }
-        .profile-dropdown:hover .profile-info span, .profile-dropdown:hover .profile-info i { color: var(--footer-link-hover); }
-        .dropdown-content { display: none; position: absolute; right: 0; top: 150%; background-color: #fff; min-width: 180px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.1); z-index: 1001; border-radius: 8px; overflow: hidden; border: 1px solid #eee; }
-        .dropdown-content a { color: black; padding: 12px 16px; text-decoration: none; display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 500; text-align: left; transition: background-color 0.2s; }
-        .dropdown-content a:hover { background-color: #f1f1f1; color: #B95A4B; }
-        .profile-dropdown.active .dropdown-content { display: block; }
-        .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.6); padding-top: 60px; align-items: flex-start; justify-content: center; }
-        .modal-content { background-color: #fefefe; margin: 5% auto; padding: 30px; border: 1px solid #888; width: 90%; max-width: 360px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); text-align: center; position: relative; animation: fadeIn 0.5s; }
-        .close-btn { color: #aaa; position: absolute; top: 10px; right: 20px; font-size: 28px; font-weight: bold; cursor: pointer; }
-        .close-btn:hover, .close-btn:focus { color: black; text-decoration: none; }
-        .modal-content h2 { margin-bottom: 20px; }
-        .modal-content input[type="email"], .modal-content input[type="password"], .modal-content input[type="text"] { width: 100%; padding: 10px; margin: 8px 0; display: inline-block; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
-        .modal-content button { background-color: #111; color: white; padding: 12px 20px; margin: 15px 0; border: none; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; transition: background-color 0.3s; }
-        .modal-content button:hover { background-color: #333; }
-        .modal-content .options { display: flex; justify-content: space-between; align-items: center; font-size: 14px; margin-top: 10px; margin-bottom: 15px; }
-        .modal-content .register a, .modal-content .login a { color: #E03A3E; font-weight: bold; text-decoration: none; }
-        .modal-content .register a:hover, .modal-content .login a:hover { text-decoration: underline; }
+        .nav-icon-link { color: var(--white); font-size: 1.2rem; transition: color 0.3s; }
+        .nav-icon-link:hover { color: var(--footer-link-hover); }
+        
+        .login-trigger {
+            background: var(--primary-color); color: var(--white); padding: 8px 24px;
+            border-radius: 30px; font-weight: 600; font-size: 0.9rem; border: none; cursor: pointer; transition: background 0.3s;
+        }
+        .login-trigger:hover { background: var(--primary-dark); }
+
+        /* Profile Dropdown */
+        .profile-dropdown { position: relative; cursor: pointer; }
+        .profile-header { display: flex; align-items: center; gap: 8px; color: var(--white); font-weight: 500; }
+        .profile-menu {
+            display: none; position: absolute; right: 0; top: 140%; background: var(--white); min-width: 200px;
+            border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); overflow: hidden; z-index: 1001;
+        }
+        .profile-dropdown:hover .profile-menu { display: block; }
+        .profile-menu a { display: block; padding: 12px 20px; color: var(--text-color); font-size: 0.95rem; border-bottom: 1px solid var(--border-color); }
+        .profile-menu a:last-child { border-bottom: none; }
+        .profile-menu a:hover { background: var(--bg-light); color: var(--primary-color); }
+
+        .hamburger { display: none; cursor: pointer; z-index: 1002; }
+        .bar { display: block; width: 25px; height: 3px; margin: 5px auto; background-color: var(--white); transition: 0.3s; }
+
+        /* --- Menu Hero (Left Aligned) --- */
+        .menu-hero {
+            position: relative;
+            height: 50vh;
+            min-height: 350px;
+            background: url('Cover-Photo.jpg') no-repeat center center/cover;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start; /* Left align */
+            margin-top: -90px;
+            padding-top: 90px;
+            overflow: hidden;
+        }
+        
+        /* Gradient Overlay */
+        .menu-hero::before {
+            content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(to right, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 40%, rgba(0,0,0,0) 100%);
+            z-index: 1;
+        }
+
+        .menu-hero-content {
+            position: relative; z-index: 2; color: var(--white); animation: fadeInUp 1s ease-out;
+            padding-left: 5%; max-width: 800px;
+        }
+        .menu-hero h1 {
+            font-family: var(--font-hero); font-size: 5rem; color: var(--white); margin-bottom: 1rem; line-height: 1.1;
+            text-shadow: 2px 2px 20px rgba(0,0,0,0.8);
+        }
+        .menu-hero h1 span { color: var(--primary-color); }
+        .menu-hero p {
+            font-size: 1.3rem; color: rgba(255,255,255,0.95); font-weight: 300; text-shadow: 1px 1px 10px rgba(0,0,0,0.8);
+        }
+
+        /* --- Filter Section --- */
+        .filters-container { padding: 3rem 0 2rem; text-align: center; }
+        .menu-filters { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; }
+        .filter-btn {
+            background: var(--white); border: 1px solid var(--border-color); padding: 10px 25px;
+            border-radius: 50px; font-family: var(--font-body); font-weight: 600; color: var(--text-light);
+            cursor: pointer; transition: all 0.3s; font-size: 0.95rem; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--primary-color); border-color: var(--primary-color); color: var(--white);
+            box-shadow: 0 4px 12px rgba(185, 90, 75, 0.3); transform: translateY(-2px);
+        }
+
+        /* --- Menu Grid --- */
+        .menu-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 2.5rem; padding-bottom: 6rem;
+        }
+        .menu-card {
+            background: var(--white); border-radius: 16px; overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.05); transition: transform 0.3s ease;
+            border: 1px solid var(--border-color); display: flex; flex-direction: column;
+            cursor: pointer;
+        }
+        .menu-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
+        
+        .card-img-wrapper { height: 220px; overflow: hidden; background: #f4f4f4; position: relative; }
+        .card-img-wrapper img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s ease; }
+        .menu-card:hover .card-img-wrapper img { transform: scale(1.1); }
+        
+        .card-content { padding: 1.5rem; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; }
+        .card-header { margin-bottom: 0.5rem; }
+        .card-title { font-family: var(--font-heading); font-size: 1.3rem; font-weight: 700; color: var(--heading-color); margin: 0; }
+        .card-cat { font-size: 0.8rem; text-transform: uppercase; color: var(--primary-color); letter-spacing: 1px; font-weight: 600; margin-bottom: 0.5rem; display: block; }
+        
+        .card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem; border-top: 1px solid #f0f0f0; padding-top: 1rem; }
+        .card-price { font-size: 1.2rem; font-weight: 700; color: var(--text-color); }
+        .add-cart-btn {
+            background: var(--bg-light); color: var(--text-color); width: 40px; height: 40px;
+            border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            transition: all 0.3s; border: 1px solid var(--border-color);
+        }
+        .menu-card:hover .add-cart-btn { background: var(--primary-color); color: var(--white); border-color: var(--primary-color); }
+
+        /* --- Footer (Consistent) --- */
+        .footer { background-color: var(--footer-bg-color); color: var(--footer-text-color); padding-top: 4rem; font-size: 0.95rem; }
+        .footer-content { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 3rem; padding-bottom: 3rem; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .footer-brand h3 { color: var(--white); font-family: var(--font-logo-cafe); font-size: 1.8rem; }
+        .footer-brand p { opacity: 0.7; margin-bottom: 1.5rem; line-height: 1.7; }
+        .socials { display: flex; gap: 15px; }
+        .social-link { width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; transition: 0.3s; }
+        .social-link:hover { background: var(--footer-link-hover); color: var(--secondary-color); }
+        .footer-col h4 { color: var(--white); font-size: 1.1rem; margin-bottom: 1.5rem; font-family: var(--font-body); }
+        .footer-links li { margin-bottom: 0.8rem; }
+        .footer-links a { color: rgba(255,255,255,0.6); transition: 0.3s; }
+        .footer-links a:hover { color: var(--footer-link-hover); padding-left: 5px; }
+        .copyright { text-align: center; padding: 1.5rem 0; opacity: 0.5; font-size: 0.85rem; }
+
+        /* --- Modals (Consistent) --- */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 2000; align-items: center; justify-content: center; backdrop-filter: blur(8px); animation: fadeIn 0.3s; }
+        .modal-box { background: #ffffff; padding: 40px; border-radius: 24px; width: 90%; max-width: 420px; position: relative; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .modal-close { position: absolute; top: 20px; right: 25px; font-size: 1.5rem; color: #ccc; cursor: pointer; transition: 0.2s; }
+        .modal-close:hover { color: var(--primary-color); }
+        .modal-title { text-align: center; font-family: var(--font-heading); font-size: 2rem; margin-bottom: 2rem; color: var(--heading-color); letter-spacing: -0.5px; }
+        .input-group { position: relative; margin-bottom: 20px; }
+        .input-icon { position: absolute; left: 18px; top: 50%; transform: translateY(-50%); color: #aaa; font-size: 1rem; transition: 0.3s; }
+        .input-field { width: 100%; padding: 14px 15px 14px 48px; border: 1px solid #e2e8f0; border-radius: 12px; font-family: var(--font-body); font-size: 1rem; background: #f8f9fa; transition: 0.3s; color: var(--text-color); }
+        .input-field:focus { border-color: var(--primary-color); background: #fff; box-shadow: 0 0 0 4px rgba(185, 90, 75, 0.1); outline: none; }
+        .input-field:focus + .input-icon { color: var(--primary-color); }
+        .modal-btn { width: 100%; padding: 14px; border-radius: 12px; font-size: 1rem; margin-top: 10px; letter-spacing: 0.5px; }
+        .modal-options { display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; margin-bottom: 20px; color: #666; }
+        .modal-footer { text-align: center; margin-top: 25px; font-size: 0.95rem; color: #666; }
+        .link-highlight { color: var(--primary-color); font-weight: 700; cursor: pointer; transition: 0.2s; }
+        .link-highlight:hover { text-decoration: underline; color: var(--primary-dark); }
+        select.input-field { appearance: none; cursor: pointer; }
+
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .container { max-width: 1140px; margin: 0 auto; padding: 0 20px; }
-        .section-title { font-family: 'Playfair Display', serif; text-align: center; font-size: 2.8rem; color: #1F1F1F; margin-bottom: 1rem; }
-        .section-subtitle { text-align: center; max-width: 650px; margin: 0 auto 3.5rem auto; color: #666; font-size: 1.1rem; }
-        .menu-page-section { padding-top: 4rem; padding-bottom: 6rem; }
-        .menu-filters { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; margin-bottom: 3rem; }
-        .filter-btn { font-family: 'Lato', sans-serif; background-color: #f0f0f0; color: #555; border: none; padding: 10px 25px; border-radius: 50px; cursor: pointer; font-weight: bold; font-size: 0.95rem; transition: all 0.3s ease; text-decoration: none; }
-        .filter-btn:hover { background-color: #ddd; }
-        .filter-btn.active { background-color: #B95A4B; color: #fff; box-shadow: 0 4px 10px rgba(185, 90, 75, 0.3); }
-        .menu-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem; }
-        .menu-item-card { background-color: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 5px 20px rgba(0,0,0,0.1); transition: transform 0.3s ease; display: flex; flex-direction: column; height: 400px; cursor: pointer; }
-        .menu-item-card:hover { transform: translateY(-8px); }
-        .card-img-wrapper { width: 100%; height: 70%; overflow: hidden; position: relative; background-color: #f0f0f0; }
-        .card-img-wrapper img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.4s ease; }
-        .menu-item-card:hover .card-img-wrapper img { transform: scale(1.05); }
-        .card-info-overlay { background-color: #2b3542; color: #fff; padding: 1rem 1.5rem; height: 30%; display: flex; flex-direction: column; justify-content: center; position: relative; }
-        .card-info-overlay h3 { font-family: 'Playfair Display', serif; color: #fff; font-size: 1.4rem; margin-bottom: 0.5rem; line-height: 1.2; }
-        .card-info-overlay .price { font-size: 1.1rem; color: #FFC94A; font-weight: bold; }
-        .cart-btn { position: absolute; bottom: 1rem; right: 1.5rem; background-color: #B95A4B; color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; text-decoration: none; font-size: 1rem; transition: background-color 0.3s ease, transform 0.3s ease; z-index: 3; border: none; cursor: pointer; }
-        .cart-btn:hover { background-color: #a14436; transform: scale(1.1); }
-        @media (max-width: 850px) {
-            .nav-menu { position: fixed; left: -100%; top: var(--nav-height); flex-direction: column; background-color: var(--secondary-color); width: 100%; text-align: center; transition: 0.3s; padding: 2rem 0; }
-            .nav-menu.active { left: 0; }
-            .nav-item { margin: 1rem 0; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(30px); scale: 0.95; } to { opacity: 1; transform: translateY(0); scale: 1; } }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+
+        @media (max-width: 992px) {
+            .footer-content { grid-template-columns: 1fr; }
+            .menu-hero h1 { font-size: 3.5rem; }
+        }
+        @media (max-width: 768px) {
+            .nav-menu { display: none; }
             .hamburger { display: block; }
-            .nav-right-cluster { display: none; }
-            .hamburger { display: block; }
+            .nav-menu.active { display: flex; flex-direction: column; position: absolute; top: var(--nav-height); left: 0; width: 100%; background: var(--secondary-color); padding: 2rem; text-align: center; }
+            .mobile-link { display: block; }
+            .menu-hero-content { padding-left: 0; padding: 0 20px; text-align: center; }
+            .menu-hero { justify-content: center; }
         }
     </style>
 </head>
 <body>
 
-<header class="header header-page"> 
-    <nav class="navbar container">
-        <a href="index.php" class="nav-logo">
-            <span class="logo-cafe"><span class="first-letter">C</span>afe</span>
-            <span class="logo-emmanuel"><span class="first-letter">E</span>mmanuel</span>
-        </a>
-        <ul class="nav-menu">
-            <li class="nav-item"><a href="index.php" class="nav-link">Home</a></li>
-            <li class="nav-item"><a href="product.php" class="nav-link active">Menu</a></li>
-            <li class="nav-item"><a href="about.php" class="nav-link">About</a></li>
-            <li class="nav-item"><a href="contact.php" class="nav-link">Contact</a></li>
-            <?php if (isset($_SESSION['user_id'])): ?>
-                <li class="nav-item"><a href="my_orders.php" class="nav-link">My Orders</a></li>
+    <header class="header">
+        <nav class="navbar container">
+            <a href="index.php" class="nav-logo">
+                <span class="logo-cafe"><span class="first-letter">C</span>afe</span>
+                <span class="logo-emmanuel"><span class="first-letter">E</span>mmanuel</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="index.php" class="nav-link">Home</a></li>
+                <li><a href="product.php" class="nav-link active">Menu</a></li>
+                <li><a href="about.php" class="nav-link">About</a></li>
+                <li><a href="contact.php" class="nav-link">Contact</a></li>
+                <?php if (isset($_SESSION['user_id'])): ?>
+                <li><a href="my_orders.php" class="nav-link">My Orders</a></li>
                 <?php endif; ?>
-            <li class="nav-item" style="display: none;"><a href="cart.php" class="nav-link">My Cart</a></li>
-            <?php if (isset($_SESSION['user_id'])): ?>
-                <li class="nav-item" style="display: none;"><a href="logout.php" class="nav-link">Log Out</a></li>
-            <?php else: ?>
-                <li class="nav-item" style="display: none;"><a href="#" id="loginModalBtnMobile" class="nav-link">Login/Register</a></li>
-            <?php endif; ?>
-        </ul>
-        <div class="nav-right-cluster">
+                
+                <li class="mobile-link" style="display:none;"><a href="cart.php" class="nav-link">Cart</a></li>
+                <?php if (!isset($_SESSION['user_id'])): ?>
+                <li class="mobile-link" style="display:none;"><a href="#" onclick="openModal('loginModal')" class="nav-link">Login</a></li>
+                <?php else: ?>
+                <li class="mobile-link" style="display:none;"><a href="logout.php" class="nav-link">Logout</a></li>
+                <?php endif; ?>
+            </ul>
+            
+            <div class="nav-right-cluster">
                 <?php if (isset($_SESSION['user_id']) && isset($_SESSION['fullname'])): ?>
                     <div class="profile-dropdown">
-                        <div class="profile-info">
-                            <i class="fa fa-user-circle"></i>
+                        <div class="profile-header">
+                            <i class="fas fa-user-circle"></i>
                             <span><?php echo htmlspecialchars(explode(' ', $_SESSION['fullname'])[0]); ?></span>
-                            <i class="fa fa-caret-down"></i>
+                            <i class="fas fa-chevron-down" style="font-size: 0.8rem;"></i>
                         </div>
-                    <div class="dropdown-content">
-                        <a href="profile.php"><i class="fa fa-user"></i> My Profile</a>
-                        <?php if (in_array($_SESSION['role'], ['admin', 'super_admin'])): ?>
-                            <a href="Dashboard.php"><i class="fa fa-tachometer-alt"></i> Dashboard</a>
-                        <?php endif; ?>
-                        <a href="logout.php"><i class="fa fa-sign-out-alt"></i> Log Out</a>
+                        <div class="profile-menu">
+                            <a href="profile.php"><i class="fas fa-user"></i> My Profile</a>
+                            <?php if (in_array($_SESSION['role'], ['admin', 'super_admin'])): ?>
+                                <a href="Dashboard.php"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+                            <?php endif; ?>
+                            <a href="logout.php"><i class="fas fa-sign-out-alt"></i> Log Out</a>
+                        </div>
                     </div>
-                </div>
-            <?php else: ?>
-                <button id="loginModalBtn" class="nav-button">Sign In / Sign Up</button>
-            <?php endif; ?>
-            
-            <a href="cart.php" class="nav-cart-link"><i class="fas fa-shopping-cart"></i></a>
-            <a href="#" class="nav-cart-link"><i class="fas fa-bell"></i></a>
-        </div>
-        <div class="hamburger">
-            <span class="bar"></span>
-            <span class="bar"></span>
-            <span class="bar"></span>
-        </div>
-    </nav>
-</header>
+                <?php else: ?>
+                    <button id="loginTrigger" class="login-trigger" onclick="openModal('loginModal')">Login</button>
+                <?php endif; ?>
+                
+                <a href="cart.php" class="nav-icon-link"><i class="fas fa-shopping-cart"></i></a>
+                <?php if (isset($_SESSION['user_id'])): ?>
+                    <?php include 'notification_bell.php'; ?>
+                <?php endif; ?>
+            </div>
 
-<div id="loginModal" class="modal">
-    <div class="modal-content">
-      <span class="close-btn" id="closeLoginModal">&times;</span>
-      <h2>Login to Cafe Emmanuel</h2>
-      <?php if (isset($login_error)): ?><p style="color:red;"><?php echo $login_error; ?></p><?php endif; ?>
-      <form method="POST" action="product.php">
-        <input type="email" name="email" placeholder="Email" required>
-        <input type="password" name="password" placeholder="Password" required>
-        <div class="options">
-          <label><input type="checkbox" name="remember"> Remember me</label>
-          <a href="#">Forgot Password?</a>
-        </div>
-        <button type="submit" name="login">Login</button>
-        <p class="register">Don't you have an account? <a href="#" id="showRegisterModal">Register</a></p>
-      </form>
-    </div>
-</div>
+            <div class="hamburger">
+                <span class="bar"></span>
+                <span class="bar"></span>
+                <span class="bar"></span>
+            </div>
+        </nav>
+    </header>
 
-  <div id="registerModal" class="modal">
-    <div class="modal-content">
-      <span class="close-btn" id="closeRegisterModal">&times;</span>
-      <h2>Register to CafeEmmanuel</h2>
-       <?php if (isset($register_error) && $register_error): ?><p style="color:red;"><?php echo $register_error; ?></p><?php endif; ?>
-       <?php if (isset($register_success) && $register_success): ?><p style="color:green;"><?php echo $register_success; ?></p><?php endif; ?>
-      <form method="POST" action="product.php">
-          <input type="text" name="fullname" placeholder="Full Name" required minlength="8">
-          <input type="text" name="username" placeholder="Username" required minlength="4">
-          <input type="email" name="email" placeholder="Email" required>
-          <input type="password" name="password" placeholder="Password" required minlength="8" pattern="^(?=.*[A-Z]).{8,}$" title="Password must be at least 8 characters and contain one capital letter">
-          <input type="password" name="confirm_password" placeholder="Confirm Password" required>
-          <button type="submit" name="register">Register</button>
-          <p class="login">Have an account? <a href="#" id="showLoginModal">Login</a></p>
-      </form>
-    </div>
-</div>
+    <main>
+        <section class="menu-hero">
+            <div class="menu-hero-content">
+                <h1>Our <span>Menu</span></h1>
+                <p>Discover the taste of passion in every bite and sip. Freshly prepared for you.</p>
+            </div>
+        </section>
 
-<main>
-    <section class="menu-page-section">
         <div class="container">
-            <h2 class="section-title">Our Menu</h2>
-            <p class="section-subtitle">Discover our carefully curated selection of artisanal coffee, fresh food, and delicious treats.</p>
-            
-            <div class="menu-filters">
-                <button class="filter-btn active" data-filter="all">All</button>
-                <button class="filter-btn" data-filter="burger">Burger</button>
-                <button class="filter-btn" data-filter="pizza">Pizza</button>
-                <button class="filter-btn" data-filter="pasta">Pasta</button>
-                <button class="filter-btn" data-filter="coffee">Coffee</button>
-                <button class="filter-btn" data-filter="dessert">Dessert</button>
+            <div class="filters-container">
+                <div class="menu-filters">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="coffee">Coffee & Drinks</button>
+                    <button class="filter-btn" data-filter="food">Food</button>
+                    <button class="filter-btn" data-filter="burger">Burgers</button>
+                    <button class="filter-btn" data-filter="pizza">Pizza</button>
+                    <button class="filter-btn" data-filter="pasta">Pasta</button>
+                    <button class="filter-btn" data-filter="dessert">Desserts</button>
+                </div>
             </div>
 
             <div class="menu-grid">
-                <?php
-                    foreach ($products as $product) {
-                        $product_data = htmlspecialchars(json_encode($product), ENT_QUOTES, 'UTF-8');
-
-                        $onclick_action = isset($_SESSION['user_id'])
-                            ? "viewProduct(" . $product_data . ")"
-                            : "document.getElementById('loginModal').style.display='flex'";
-                        
-                        echo '
-                        <div class="menu-item-card" data-category="'. htmlspecialchars($product['category']) .'" onclick="'. $onclick_action .'">
-                            <div class="card-img-wrapper">
-                                <img src="' . htmlspecialchars($product['image']) . '" alt="' . htmlspecialchars($product['name']) . '">
-                            </div>
-                            <div class="card-info-overlay">
-                                <h3>' . htmlspecialchars($product['name']) . '</h3>
-                                <p class="price">₱' . number_format($product['price'], 2) . '</p>
-                                <button class="cart-btn"><i class="fas fa-shopping-cart"></i></button>
-                            </div>
-                        </div>';
-                    }
+                <?php foreach ($products as $product): 
+                    // Generate data-category based on product category
+                    $cat = strtolower($product['category']);
+                    $dataFilter = $cat;
+                    // Add 'food' generic filter to specific food categories
+                    if(in_array($cat, ['pizza', 'burger', 'pasta'])) { $dataFilter .= ' food'; }
+                    
+                    // Prepare data for JS click handling
+                    $product_data = htmlspecialchars(json_encode($product), ENT_QUOTES, 'UTF-8');
+                    $onclick_action = isset($_SESSION['user_id'])
+                        ? "viewProduct(" . $product_data . ")"
+                        : "openModal('loginModal')";
                 ?>
+                <div class="menu-card" data-category="<?php echo htmlspecialchars($dataFilter); ?>" onclick="<?php echo $onclick_action; ?>">
+                    <div class="card-img-wrapper">
+                        <img src="<?php echo htmlspecialchars($product['image']); ?>" alt="<?php echo htmlspecialchars($product['name']); ?>">
+                    </div>
+                    <div class="card-content">
+                        <div class="card-header">
+                            <span class="card-cat"><?php echo htmlspecialchars($product['category']); ?></span>
+                            <h3 class="card-title"><?php echo htmlspecialchars($product['name']); ?></h3>
+                        </div>
+                        <div class="card-footer">
+                            <span class="card-price">₱<?php echo number_format($product['price'], 2); ?></span>
+                            <button class="add-cart-btn"><i class="fas fa-shopping-cart"></i></button>
+                        </div>
+                    </div>
+                </div>
+                <?php endforeach; ?>
             </div>
         </div>
-    </section>
-</main>
+    </main>
 
-<script>
-    function viewProduct(productData) {
-      localStorage.setItem('selectedProduct', JSON.stringify(productData));
-      window.location.href = 'quantity.php';
-    }
-
-    document.addEventListener("DOMContentLoaded", function() {
-        // --- PROFILE DROPDOWN ---
-        const profileDropdown = document.querySelector('.profile-dropdown');
-        if (profileDropdown) {
-            profileDropdown.addEventListener('click', function(event) {
-                event.stopPropagation();
-                this.classList.toggle('active');
-            });
-            window.addEventListener('click', function() {
-                if(profileDropdown.classList.contains('active')) {
-                    profileDropdown.classList.remove('active');
-                }
-            });
-        }
-        
-        // --- MODAL CONTROLS ---
-        const loginModal = document.getElementById("loginModal");
-        const registerModal = document.getElementById("registerModal");
-        const loginBtn = document.getElementById("loginModalBtn");
-        const loginBtnMobile = document.getElementById("loginModalBtnMobile");
-        const closeLoginModal = document.getElementById("closeLoginModal");
-        const closeRegisterModal = document.getElementById("closeRegisterModal");
-        const showRegisterModal = document.getElementById("showRegisterModal");
-        const showLoginModal = document.getElementById("showLoginModal");
-
-        if(loginBtn) loginBtn.onclick = () => { loginModal.style.display = "flex"; }
-        if(loginBtnMobile) loginBtnMobile.onclick = (e) => { e.preventDefault(); loginModal.style.display = "flex"; }
-        if(closeLoginModal) closeLoginModal.onclick = () => { loginModal.style.display = "none"; }
-        if(closeRegisterModal) closeRegisterModal.onclick = () => { registerModal.style.display = "none"; }
-        
-        window.onclick = (event) => {
-            if (event.target == loginModal) loginModal.style.display = "none";
-            if (event.target == registerModal) registerModal.style.display = "none";
-        }
-
-        if(showRegisterModal) showRegisterModal.onclick = (e) => { e.preventDefault(); loginModal.style.display = "none"; registerModal.style.display = "flex"; }
-        if(showLoginModal) showLoginModal.onclick = (e) => { e.preventDefault(); registerModal.style.display = "none"; loginModal.style.display = "flex"; }
-        
-        // --- NAVIGATION & FILTER SCRIPT ---
-        const hamburger = document.querySelector('.hamburger');
-        const navMenu = document.querySelector('.nav-menu');
-
-        if (hamburger) {
-            hamburger.addEventListener('click', () => {
-                hamburger.classList.toggle('active');
-                navMenu.classList.toggle('active');
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <h3><span style="color:var(--primary-color);">C</span>afe Emmanuel</h3>
+                    <p>Your neighborhood destination for exceptional coffee, delicious food, and warm hospitality.</p>
+                    <div class="socials">
+                        <a href="#" class="social-link"><i class="fab fa-facebook-f"></i></a>
+                        <a href="#" class="social-link"><i class="fab fa-instagram"></i></a>
+                        <a href="#" class="social-link"><i class="fab fa-twitter"></i></a>
+                    </div>
+                </div>
                 
-                const mobileItems = navMenu.querySelectorAll('.nav-item[style*="display: none"]');
-                mobileItems.forEach(item => {
-                    item.style.display = navMenu.classList.contains('active') ? 'block' : 'none';
-                });
-            });
-        }
+                <div class="footer-col">
+                    <h4>Quick Links</h4>
+                    <ul class="footer-links">
+                        <li><a href="index.php">Home</a></li>
+                        <li><a href="product.php">Menu</a></li>
+                        <li><a href="about.php">About Us</a></li>
+                        <li><a href="contact.php">Contact</a></li>
+                    </ul>
+                </div>
+                
+                <div class="footer-col">
+                    <h4>Contact Info</h4>
+                    <ul class="footer-links">
+                        <li><i class="fas fa-map-marker-alt" style="margin-right:8px; color:var(--primary-color);"></i> San Antonio, Guagua</li>
+                        <li><i class="fas fa-phone" style="margin-right:8px; color:var(--primary-color);"></i> (555) 123-CAFE</li>
+                        <li><i class="fas fa-envelope" style="margin-right:8px; color:var(--primary-color);"></i> hello@cafeemmanuel.com</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="copyright">
+                <p>© 2025 Cafe Emmanuel. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
 
-        const navLinks = document.querySelectorAll('.nav-link');
-        navLinks.forEach(link => {
-            link.classList.remove('active');
-            if (link.getAttribute('href') === 'product.php') {
-                link.classList.add('active');
+    <div id="loginModal" class="modal-overlay" <?php if (isset($_GET['action']) && $_GET['action'] === 'login') echo 'style="display:flex;"'; ?>>
+        <div class="modal-box">
+            <span class="modal-close" onclick="closeModal('loginModal')">×</span>
+            <h2 class="modal-title">Welcome Back</h2>
+            <form method="POST" action="index.php">
+                <div class="input-group">
+                    <i class="fas fa-envelope input-icon"></i>
+                    <input type="text" name="identifier" placeholder="Email or Username" class="input-field" required>
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-lock input-icon"></i>
+                    <input type="password" name="password" placeholder="Password" class="input-field" required>
+                </div>
+                <div class="modal-options">
+                    <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" name="remember"> Remember me</label>
+                    <a href="#" class="link-highlight">Forgot Password?</a>
+                </div>
+                <button type="submit" name="login" class="btn btn-primary modal-btn">Login</button>
+            </form>
+            <div class="modal-footer">
+                Don't have an account? <a href="#" onclick="switchModal('loginModal', 'registerModal')" class="link-highlight">Register</a>
+            </div>
+        </div>
+    </div>
+
+    <div id="registerModal" class="modal-overlay" <?php if ($register_error) echo 'style="display:flex;"'; ?>>
+        <div class="modal-box" style="max-width: 450px;">
+            <span class="modal-close" onclick="closeModal('registerModal')">×</span>
+            <h2 class="modal-title">Create Account</h2>
+            <?php if ($register_error): ?><p style="color: #dc3545; text-align: center; margin-bottom: 10px; font-size: 0.9rem;"><?php echo $register_error; ?></p><?php endif; ?>
+            <?php if ($register_success): ?><p style="color: #28a745; text-align: center; margin-bottom: 10px; font-size: 0.9rem;"><?php echo $register_success; ?></p><?php endif; ?>
+            <form method="POST" action="product.php">
+                <div class="input-group">
+                    <i class="fas fa-user input-icon"></i>
+                    <input type="text" name="fullname" placeholder="Full Name" class="input-field" required minlength="8">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-at input-icon"></i>
+                    <input type="text" name="username" placeholder="Username" class="input-field" required minlength="4">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-envelope input-icon"></i>
+                    <input type="email" name="email" placeholder="Email Address" class="input-field" required>
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-phone input-icon"></i>
+                    <input type="tel" name="contact" placeholder="Contact Number" class="input-field" pattern="[0-9]{10,15}">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-venus-mars input-icon"></i>
+                    <select name="gender" class="input-field" required>
+                        <option value="" disabled selected>Select Gender</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                        <option value="Non-Binary">Non-Binary</option>
+                        <option value="Prefer not to say">Prefer not to say</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-lock input-icon"></i>
+                    <input type="password" name="password" placeholder="Password (Min 8 chars, 1 Uppercase)" class="input-field" required minlength="8" pattern="^(?=.*[A-Z]).{8,}$">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-check-circle input-icon"></i>
+                    <input type="password" name="confirm_password" placeholder="Confirm Password" class="input-field" required>
+                </div>
+                <button type="submit" name="register" class="btn btn-primary modal-btn">Register</button>
+            </form>
+            <div class="modal-footer">
+                Already have an account? <a href="#" onclick="switchModal('registerModal', 'loginModal')" class="link-highlight">Login</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Header Scroll Effect
+        window.addEventListener('scroll', () => {
+            const header = document.querySelector('.header');
+            if (window.scrollY > 50) {
+                header.classList.add('scrolled');
+            } else {
+                header.classList.remove('scrolled');
             }
         });
 
-        const filterButtons = document.querySelectorAll('.filter-btn');
-        const menuItems = document.querySelectorAll('.menu-item-card');
+        // Product Redirect Function
+        function viewProduct(productData) {
+            localStorage.setItem('selectedProduct', JSON.stringify(productData));
+            window.location.href = 'quantity.php';
+        }
 
-        filterButtons.forEach(button => {
-            button.addEventListener('click', () => {
-                filterButtons.forEach(btn => btn.classList.remove('active'));
-                button.classList.add('active');
-                const filterValue = button.getAttribute('data-filter');
-                menuItems.forEach(item => {
-                    if (filterValue === 'all' || item.getAttribute('data-category') === filterValue) {
-                        item.style.display = 'flex';
+        // Filtering Logic
+        const filterBtns = document.querySelectorAll('.filter-btn');
+        const menuCards = document.querySelectorAll('.menu-card');
+
+        filterBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Remove active class from all
+                filterBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                const filterValue = btn.getAttribute('data-filter');
+                
+                menuCards.forEach(card => {
+                    const categories = card.getAttribute('data-category');
+                    if (filterValue === 'all' || categories.includes(filterValue)) {
+                        card.style.display = 'flex';
                     } else {
-                        item.style.display = 'none';
+                        card.style.display = 'none';
                     }
                 });
             });
         });
-    });
-</script>
 
+        // Modals Control Functions
+        function openModal(modalId) { document.getElementById(modalId).style.display = 'flex'; }
+        function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
+        function switchModal(from, to) { closeModal(from); openModal(to); }
+        
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal-overlay')) {
+                event.target.style.display = 'none';
+            }
+        }
+
+        // Mobile Menu Toggle
+        const hamburger = document.querySelector('.hamburger');
+        const navMenu = document.querySelector('.nav-menu');
+        const mobileLinks = document.querySelectorAll('.mobile-link');
+
+        hamburger.addEventListener('click', () => {
+            navMenu.classList.toggle('active');
+            mobileLinks.forEach(link => {
+                link.style.display = navMenu.classList.contains('active') ? 'block' : 'none';
+            });
+        });
+        
+        // Login Button Listeners
+        const loginBtns = document.querySelectorAll('#loginTrigger, .mobile-link a[href="#"]');
+        loginBtns.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                if(e.target.innerText === "Login" || e.target.id === "loginTrigger") {
+                    e.preventDefault();
+                    openModal('loginModal');
+                }
+            });
+        });
+    </script>
 </body>
 </html>
